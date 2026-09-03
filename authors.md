@@ -19,7 +19,7 @@
 ## Citation
 
 Source:
-[`DESCRIPTION`](https://github.com/pedrobtz/mdbx/blob/develop/DESCRIPTION)
+[`DESCRIPTION`](https://github.com/pedrobtz/mdbx/blob/main/DESCRIPTION)
 
 Baltazar P (2026). *mdbx: Bindings to the 'libmdbx' Embedded Key-Value
 Store*. R package version 0.1.0, <https://pedrobtz.github.io/mdbx/>.

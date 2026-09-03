@@ -23,7 +23,7 @@ Data lives in an **environment** — a file, opened with
 path <- file.path(tempdir(), "notes.mdbx")
 env <- mdbx_env_open(path)
 env
-#> <mdbx_env> /tmp/Rtmp5GlOUQ/notes.mdbx 
+#> <mdbx_env> /tmp/RtmpFsQZMF/notes.mdbx 
 #>   access: read-write 
 #>   layout: single file 
 #>   status: open
@@ -207,7 +207,7 @@ one_txn <- system.time(
 
 c(per_transaction = per_txn, single_transaction = one_txn)
 #>    per_transaction single_transaction 
-#>              0.049              0.005
+#>              0.067              0.004
 ```
 
 Each commit flushes to disk, so the gap is really a count of `fsync`
@@ -345,7 +345,7 @@ info[c("geo_current", "geo_upper", "numreaders")]
 #> [1] 65536
 #> 
 #> $geo_upper
-#> [1] 22548578304
+#> [1] 21474836480
 #> 
 #> $numreaders
 #> [1] 1
