@@ -1,0 +1,57 @@
+Subject: Raise an R condition instead of terminating the R session on panic
+
+libmdbx's osal_panic() calls the platform assert-failure entry point and then
+abort() on POSIX, or _CrtDbgReport/DebugBreak/FatalExit on Windows. Every one of
+those takes the whole R session down with it, and `R CMD check` flags the
+resulting __assert_fail / __assert_rtn references under "checking compiled code".
+
+Route the panic through mdbx_r_panic(), implemented in src/r_mdbx_hooks.cpp.
+Package calls run below a package-owned jump boundary: the hook records the
+failure and returns to that boundary, an optional callback poisons the owning
+handle, and only then does the cpp11 layer raise an R condition. The enclosing
+while(1) is retained so the compiler still treats osal_panic() as non-returning.
+
+Caveat: the jump out of libmdbx may leave internal locks held. A panic means an
+invariant was already violated, so the poison callback must make the environment
+unusable and its finalizer must not re-enter libmdbx.
+
+Note this leaves the per-platform __assert_fail declaration block above as dead
+code. It is deliberately left in place to keep the patch minimal; declarations
+alone create no symbol references, only calls do.
+
+--- a/src/vendor/libmdbx/mdbx.c
++++ b/src/vendor/libmdbx/mdbx.c
+@@ -29613,26 +29613,16 @@
+ #define __assert_fail(assertion, file, line, function) __assert(function, file, line, assertion)
+ 
+ #endif /* __assert_fail */
++
++/* R package patch: implemented in src/r_mdbx_hooks.cpp. See tools/patches. */
++extern void mdbx_r_panic(const char *msg, const char *func, unsigned line);
+ 
+ __cold void osal_panic(const char *msg, const char *func, unsigned line) {
+   while (1) {
+-#if IS_WINDOWS
+-#if defined(_DEBUG) && !MDBX_WITHOUT_MSVC_CRT
+-    _CrtDbgReport(_CRT_ASSERT, func, line, "libmdbx", "assertion failed: %s", msg);
+-#else
+-    char *message = nullptr;
+-    const int num = osal_asprintf(&message, "\r\nMDBX-ASSERTION: %s, %s:%u\r\n", msg, func, line);
+-    if (num < 1 || !message)
+-      message = "\r\n<asprintf() failed>\r\n";
+-    OutputDebugStringA(message);
+-#endif
+-    if (IsDebuggerPresent())
+-      DebugBreak();
+-    FatalExit(STATUS_ASSERTION_FAILURE);
+-#else
+-    __assert_fail(msg, "libmdbx", line, func);
+-    abort();
+-#endif
++    /* R package patch: return to a package-owned guard rather than calling the
++     * platform assert handler / abort() / FatalExit(), all of which would take
++     * whole R session down. mdbx_r_panic() does not return. */
++    mdbx_r_panic(msg, func, line);
+   }
+ }
+ 

@@ -1,0 +1,46 @@
+Subject: Send libmdbx log output through the R console instead of stderr
+
+debug_log_va() falls back to fprintf/vfprintf on stderr when no logger callback
+has been installed via mdbx_setup_debug(). Writing to stderr bypasses R's
+console: output is misordered against R's own, escapes sink()/capture.output(),
+and may not surface at all in GUI front-ends. `R CMD check` also flags the
+stderr reference under "checking compiled code".
+
+Route it through mdbx_r_log_va(), implemented in src/r_mdbx_hooks.cpp, which uses
+REprintf()/REvprintf().
+
+This fixes the fallback specifically, so behaviour is correct even when no
+logger has been installed.
+
+--- a/src/vendor/libmdbx/mdbx.c
++++ b/src/vendor/libmdbx/mdbx.c
+@@ -27538,6 +27538,9 @@
+ 
+ /*------------------------------------------------------------------------------
+  logging */
++
++/* R package patch: implemented in src/r_mdbx_hooks.cpp. See tools/patches. */
++extern void mdbx_r_log_va(const char *function, int line, const char *fmt, va_list args);
+ 
+ __cold void debug_log_va(int level, const char *function, int line, const char *fmt, va_list args) {
+   ENSURE(osal_fastmutex_acquire(&globals.debug_lock) == 0);
+@@ -27571,16 +27574,9 @@
+     }
+ #endif /* IS_WINDOWS */
+   } else {
+-#if !IS_WINDOWS || !MDBX_WITHOUT_MSVC_CRT
+-    if (function && line > 0)
+-      fprintf(stderr, "%s:%d ", function, line);
+-    else if (function)
+-      fprintf(stderr, "%s: ", function);
+-    else if (line > 0)
+-      fprintf(stderr, "%d: ", line);
+-    vfprintf(stderr, fmt, args);
+-    fflush(stderr);
+-#endif /* !IS_WINDOWS || !MDBX_WITHOUT_MSVC_CRT */
++    /* R package patch: write through R's console instead of stderr.
++     * See tools/patches. */
++    mdbx_r_log_va(function, line, fmt, args);
+   }
+   ENSURE(osal_fastmutex_release(&globals.debug_lock) == 0);
+ }
