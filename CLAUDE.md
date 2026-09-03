@@ -39,15 +39,18 @@ drowned in its after-fork hook. Never add an entry point that reaches
 `handle->env` without going through `env_from_sexp()` /
 `txn_from_sexp()`.
 
-The real content of this repo is
-[.agents/design.md](https://pedrobtz.github.io/mdbx/.agents/design.md) —
-a ~1300-line spec that is the authoritative architecture. Read the
-relevant section of it before implementing anything.
+`.agents/` holds three documents, and nothing in them repeats what the
+code already says.
 [.agents/roadmap.md](https://pedrobtz.github.io/mdbx/.agents/roadmap.md)
-is the staged plan to 0.1.0 — check which stage is current before
-starting work, and respect what it defers to 0.2.
-[.agents/notes.md](https://pedrobtz.github.io/mdbx/.agents/notes.md)
-holds upstream reference links.
+is the staged plan through 0.1.0 with the per-stage findings, the
+feature gap against `clibmdbx` ranked by cost, the *Open questions*
+table, and the upstream reference links — start here, and respect what
+it defers to 0.2.
+[.agents/design.md](https://pedrobtz.github.io/mdbx/.agents/design.md)
+records **why** each API question was answered the way it was, including
+the four still open; read the relevant decision before revisiting one.
+[.agents/vendoring.md](https://pedrobtz.github.io/mdbx/.agents/vendoring.md)
+covers the pin, the build flags and the patch series.
 
 `AGENTS.md` is a symlink to this file. `.agents/`, `AGENTS.md`,
 `CLAUDE.md`, `tools/`, `docs/` and `_pkgdown.yml` are all in
@@ -220,8 +223,11 @@ nine `#pragma diagnostic ignored` lines, and sidestep a false-positive
 maintainer during a version bump**, never at build time —
 `tools/update-libmdbx.sh` re-vendors and replays the series. Never
 hand-edit the vendored sources: add or change a patch, regenerate, and
-update the post-patch digests in `tools/patches/README.md`.
-`.agents/patch.md` carries the narrative.
+update the post-patch digests in `tools/patches/README.md`. The *Local
+patches* section of
+[.agents/vendoring.md](https://pedrobtz.github.io/mdbx/.agents/vendoring.md)
+carries the narrative — what each patch does, and which alternatives
+were rejected.
 
 ## Licensing
 
@@ -234,19 +240,30 @@ procedure.
 
 ## Scope
 
-v0.1 is deliberately small: vendored build, env open/close, read/write
-transactions, raw get/put/delete, commit/abort, external-pointer
-lifecycle, basic stat/info, routine registration, three-platform builds,
-lifecycle tests. Named databases, cursors, iteration, batch APIs, and
-serialization are phase two.
+0.1.0 shipped: the vendored build, env open/close with flags and
+geometry, read/write transactions, get/put/delete, named databases with
+per-database stat, listing, dropping and sequences, ordered and
+resumable key/item scans, stat/info/limits, routine registration,
+three-platform builds, and the lifecycle, fork and panic tests.
+**Cursors, batch entry points (`mdbx_get_many()` and friends), duplicate
+keys (`DUPSORT`), and serialization are 0.2** — see the *Feature gap
+against `clibmdbx`* section of
+[.agents/roadmap.md](https://pedrobtz.github.io/mdbx/.agents/roadmap.md),
+which ranks them by implementation cost.
 
-Keys and values are **raw only** (no character auto-encoding) and a
-missing key reads as `NULL` — both settled in Stage 4, following
-`clibmdbx`. Durability was settled in Stage 5.6, also following
+Storage is bytes; a missing key reads as `NULL`. Keys and values go in
+as a raw vector or a single string stored as UTF-8, and come back
+decoded as text unless `as = "raw"` — settled in Stage 4, following
+`clibmdbx`. Serialization of R objects is deliberately *not* the engine
+layer’s job. Durability was settled in Stage 5.6, also following
 `clibmdbx`: flags pass through by name (`flags = c("SAFE_NOSYNC", ...)`)
 rather than through a curated enum, and nothing is relaxed by default.
-Four API questions remain open and should not be settled unilaterally —
-where serialization lives, how much of the cursor API to expose,
-database handle representation, and map resizing. See
-`## Open Design Decisions` in
-[.agents/design.md](https://pedrobtz.github.io/mdbx/.agents/design.md).
+Database handle representation was settled in Stage 8 — a name
+re-resolved per transaction, never cached across one, because an aborted
+transaction poisons a `MDBX_dbi`.
+
+Four questions remain open and should not be settled unilaterally: where
+serialization lives, how much of the cursor API to expose, map resizing,
+and the on-disk layout beyond the `subdir` default.
+[.agents/design.md](https://pedrobtz.github.io/mdbx/.agents/design.md)
+has the reasoning for each.
