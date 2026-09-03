@@ -1,0 +1,387 @@
+# Designing a disk cache on mdbx
+
+``` r
+
+library(mdbx)
+```
+
+Python’s [diskcache](https://github.com/grantjenks/python-diskcache) is
+a disk-backed cache built on SQLite, and
+[polars-diskcache](https://github.com/lmmx/polars-diskcache) layers on
+top of it: the DataFrame goes to a Parquet file, and diskcache tracks
+where it went. This article sketches the same thing on mdbx and
+implements enough of it to run.
+
+It is a design note, not a package. The point is to show what changes
+when the storage engine is an ordered key-value store rather than a
+relational one.
+
+## What diskcache asks of SQLite
+
+One table and six indexes:
+
+``` sql
+CREATE TABLE Cache (
+  rowid INTEGER PRIMARY KEY, key BLOB, raw INTEGER,
+  store_time REAL, expire_time REAL, access_time REAL,
+  access_count INTEGER, tag BLOB, size INTEGER,
+  mode INTEGER, filename TEXT, value BLOB)
+
+CREATE UNIQUE INDEX Cache_key_raw     ON Cache(key, raw)
+CREATE        INDEX Cache_expire_time ON Cache(expire_time)
+CREATE        INDEX Cache_store_time  ON Cache(store_time)
+CREATE        INDEX Cache_access_time ON Cache(access_time)
+CREATE        INDEX Cache_access_count ON Cache(access_count)
+CREATE        INDEX Cache_tag_rowid   ON Cache(tag, rowid)
+```
+
+Every index exists to answer one question in order and stop early —
+`ORDER BY expire_time LIMIT n` for expiry,
+`ORDER BY access_time LIMIT n` for least-recently-used eviction, and so
+on. `filename` is the escape hatch: values past a size threshold are
+written as separate files and the row keeps only a pointer, which is
+exactly how polars-diskcache stores Parquet.
+
+So SQLite is doing two jobs here: a keyed store, and a set of ordered
+indexes that support bounded scans. Neither needs joins, and none of the
+queries is relational.
+
+## What that becomes on mdbx
+
+mdbx gives one thing SQLite gives here — **keys in sorted order** — and
+gives it directly. A table plus an index becomes a named database whose
+*key* is the thing you want to sort by:
+
+| SQLite | mdbx |
+|----|----|
+| `Cache(key) → value` | database `values`, key → payload |
+| the metadata columns | database `meta`, key → a serialized record |
+| `INDEX (expire_time)` | database `expiry`, key `<expire><key>` |
+| `INDEX (access_time)` | database `accessed`, key `<atime><key>` |
+| `rowid INTEGER PRIMARY KEY` | [`mdbx_dbi_sequence()`](https://pedrobtz.github.io/mdbx/reference/mdbx_dbi_sequence.md) |
+| `ORDER BY x LIMIT n` | `mdbx_items(db = x, limit = n)` |
+| `WHERE x > ?` (resume) | `mdbx_items(db = x, start = k)` |
+| `ORDER BY x DESC LIMIT 1` | `mdbx_items(db = x, limit = 1, reverse = TRUE)` |
+
+An index entry is `<8 bytes of time><the key>` rather than just the
+time, for two reasons: entries must be unique — two records can expire
+in the same millisecond — and having the key in the index means expiry
+does not need a second lookup to learn what to delete.
+
+### Byte order is the only order
+
+This is the constraint everything else follows from. mdbx sorts keys as
+bytes, so a number has to be encoded such that its byte order *is* its
+numeric order. Big-endian, fixed width, does that:
+
+``` r
+
+be8 <- function(x) writeBin(as.double(x), raw(), size = 8, endian = "big")
+un8 <- function(r) readBin(r, "double", size = 8, endian = "big")
+
+times <- c(1, 1000, 1.7e9, 1.7e9 + 1, Inf)
+encoded <- vapply(times, function(t) paste(format(be8(t)), collapse = ""), "")
+identical(order(encoded), order(times))
+#> [1] TRUE
+```
+
+Note that `Inf` encodes as the largest value of all, which conveniently
+makes “never expires” sort after every real deadline — no special case
+needed.
+
+The usual R instincts do not survive here.
+`as.character(10) < as.character(9)`, and little-endian bytes sort by
+their least significant byte first. Get the encoding wrong and every
+ordered scan in this design silently returns the wrong rows.
+
+## A working draft
+
+``` r
+
+cache_open <- function(dir, map_size = 256 * 1024^2) {
+  dir.create(dir, showWarnings = FALSE, recursive = TRUE)
+  dir.create(file.path(dir, "blobs"), showWarnings = FALSE)
+
+  # A cache may lose the last few writes to a crash: it is a cache. SAFE_NOSYNC
+  # cannot corrupt the database, only roll it back to the last steady commit.
+  env <- mdbx_env_open(file.path(dir, "cache.mdbx"),
+                       max_dbs = 8, map_size = map_size, flags = "SAFE_NOSYNC")
+
+  mdbx_with_write(env, function(txn) {
+    for (name in c("values", "meta", "expiry", "accessed")) {
+      mdbx_dbi_open(txn, name, create = TRUE)
+    }
+  })
+
+  structure(list(env = env, dir = dir), class = "rcache")
+}
+
+# The four databases, resolved against the transaction in hand.
+dbs <- function(txn) {
+  list(values   = mdbx_dbi_open(txn, "values"),
+       meta     = mdbx_dbi_open(txn, "meta"),
+       expiry   = mdbx_dbi_open(txn, "expiry"),
+       accessed = mdbx_dbi_open(txn, "accessed"))
+}
+
+index_key <- function(when, key) c(be8(when), charToRaw(key))
+index_of <- function(entry) list(when = un8(entry[1:8]),
+                                 key = rawToChar(entry[-(1:8)]))
+```
+
+Writing a record touches all four databases, and the transaction makes
+that one atomic step — the property SQLite was providing:
+
+``` r
+
+cache_set <- function(cache, key, value, expire_in = Inf, threshold = 4096) {
+  now <- as.numeric(Sys.time())
+  expire <- now + expire_in
+  payload <- serialize(value, NULL)
+
+  mdbx_with_write(cache$env, function(txn) {
+    db <- dbs(txn)
+    forget(txn, db, key, cache$dir)  # replacing? drop the old index entries
+
+    # Large values go to a file and the store keeps a pointer -- the same
+    # arrangement polars-diskcache uses for Parquet.
+    blob <- NULL
+    if (length(payload) > threshold) {
+      blob <- paste0(format(as.hexmode(sum(utf8ToInt(key) * seq_along(strsplit(key, "")[[1]])))), "-",
+                     length(payload), ".rds")
+      writeBin(payload, file.path(cache$dir, "blobs", blob))
+    } else {
+      mdbx_put(txn, key, payload, db = db$values)
+    }
+
+    mdbx_put(txn, key, serialize(
+      list(stored = now, expire = expire, accessed = now,
+           size = length(payload), blob = blob), NULL), db = db$meta)
+
+    mdbx_put(txn, index_key(expire, key), raw(0), db = db$expiry)
+    mdbx_put(txn, index_key(now, key), raw(0), db = db$accessed)
+  })
+
+  invisible(cache)
+}
+
+# Remove a key everywhere it appears. Needs the metadata to find the index
+# entries, which is why the index keys carry their timestamp.
+forget <- function(txn, db, key, dir) {
+  raw_meta <- mdbx_get(txn, key, db = db$meta, as = "raw")
+  if (is.null(raw_meta)) return(FALSE)
+
+  meta <- unserialize(raw_meta)
+  mdbx_del(txn, index_key(meta$expire, key), db = db$expiry)
+  mdbx_del(txn, index_key(meta$accessed, key), db = db$accessed)
+  mdbx_del(txn, key, db = db$meta)
+  mdbx_del(txn, key, db = db$values)
+  if (!is.null(meta$blob)) unlink(file.path(dir, "blobs", meta$blob))
+  TRUE
+}
+```
+
+Reading checks the deadline itself, so an expired entry is invisible
+before anything has got round to deleting it:
+
+``` r
+
+cache_get <- function(cache, key, default = NULL) {
+  mdbx_with_read(cache$env, function(txn) {
+    db <- dbs(txn)
+    raw_meta <- mdbx_get(txn, key, db = db$meta, as = "raw")
+    if (is.null(raw_meta)) return(default)
+
+    meta <- unserialize(raw_meta)
+    if (meta$expire <= as.numeric(Sys.time())) return(default)
+
+    payload <- if (is.null(meta$blob)) {
+      mdbx_get(txn, key, db = db$values, as = "raw")
+    } else {
+      readBin(file.path(cache$dir, "blobs", meta$blob), raw(), n = meta$size)
+    }
+    unserialize(payload)
+  })
+}
+
+cache_delete <- function(cache, key) {
+  mdbx_with_write(cache$env, function(txn) forget(txn, dbs(txn), key, cache$dir))
+}
+```
+
+### Expiry and eviction are the same shape
+
+Both walk an index from its cheap end and stop early. This is the whole
+reason the indexes exist, and it is `limit`:
+
+``` r
+
+# Delete everything already past its deadline, in bounded chunks.
+cache_expire <- function(cache, limit = 100) {
+  now <- as.numeric(Sys.time())
+
+  mdbx_with_write(cache$env, function(txn) {
+    db <- dbs(txn)
+    due <- mdbx_items(txn, limit = limit, db = db$expiry, as = "raw")$keys
+
+    removed <- 0
+    for (entry in due) {
+      at <- index_of(entry)
+      if (at$when > now) break        # the rest are in the future
+      forget(txn, db, at$key, cache$dir)
+      removed <- removed + 1
+    }
+    removed
+  })
+}
+
+# Least-recently-used eviction: the oldest access times are the first keys.
+cache_evict <- function(cache, n = 10) {
+  mdbx_with_write(cache$env, function(txn) {
+    db <- dbs(txn)
+    oldest <- mdbx_items(txn, limit = n, db = db$accessed, as = "raw")$keys
+    for (entry in oldest) forget(txn, db, index_of(entry)$key, cache$dir)
+    length(oldest)
+  })
+}
+```
+
+Iteration is resumable, so listing a large cache does not materialise
+it:
+
+``` r
+
+cache_keys <- function(cache, chunk = 1000) {
+  seen <- character(0)
+  from <- NULL
+
+  mdbx_with_read(cache$env, function(txn) {
+    db <- dbs(txn)
+    repeat {
+      keys <- mdbx_keys(txn, limit = chunk, start = from, db = db$meta)
+      if (length(keys) == 0) break
+      if (!is.null(from)) keys <- keys[-1]   # `start` is inclusive
+      seen <<- c(seen, keys)
+      if (length(keys) == 0) break
+      from <<- keys[length(keys)]
+    }
+  })
+  seen
+}
+
+cache_close <- function(cache) {
+  mdbx_env_sync(cache$env)
+  mdbx_env_close(cache$env)
+}
+```
+
+## It runs
+
+``` r
+
+dir <- file.path(tempdir(), "rcache-demo")
+cache <- cache_open(dir)
+
+cache_set(cache, "alpha", list(n = 1))
+cache_set(cache, "beta", data.frame(x = 1:3))
+cache_set(cache, "brief", "gone shortly", expire_in = -1)  # already expired
+cache_set(cache, "big", runif(5000))                       # over the threshold
+
+cache_get(cache, "alpha")
+#> $n
+#> [1] 1
+
+cache_get(cache, "beta")
+#>   x
+#> 1 1
+#> 2 2
+#> 3 3
+
+# Expired on read, before anything has deleted it.
+cache_get(cache, "brief", default = "(expired)")
+#> [1] "(expired)"
+
+# The large one went to a file; the store kept a pointer.
+length(cache_get(cache, "big"))
+#> [1] 5000
+list.files(file.path(dir, "blobs"))
+#> [1] "269-40031.rds"
+```
+
+``` r
+
+sort(cache_keys(cache))
+#> [1] "alpha" "beta"  "big"   "brief"
+
+# Expiry finds only what is actually due.
+cache_expire(cache)
+#> [1] 1
+
+sort(cache_keys(cache))
+#> [1] "alpha" "beta"  "big"
+```
+
+``` r
+
+# Eviction takes the least recently used first, which is insertion order here.
+cache_evict(cache, n = 1)
+#> [1] 1
+sort(cache_keys(cache))
+#> [1] "beta" "big"
+
+cache_close(cache)
+```
+
+## What this draft leaves out
+
+It is a sketch, and the gaps are as interesting as the code.
+
+**Access time is never updated on read.** Doing it properly makes every
+[`get()`](https://rdrr.io/r/base/get.html) a write transaction, which
+serialises readers against each other — diskcache has the same problem
+and solves it with a `statistics` switch and batched updates. A real
+implementation would buffer access times and flush them periodically.
+
+**No size accounting or cull-to-limit.** `mdbx_env_info()$file_size`
+gives the database size, but the blob directory has to be tracked
+separately, and enforcing a byte ceiling means evicting until under it.
+
+**No tags.** A tag index is a fifth database keyed `<tag>\0<key>`,
+scanned with `start` for the prefix — the composite-key equivalent of
+`INDEX (tag, rowid)`.
+
+**Blob names are a toy.** They should be a content hash, and orphaned
+files need collecting when a transaction that wrote one rolls back — the
+store is transactional, the filesystem is not.
+
+**Blob deletion is not transactional, and this draft gets it wrong on
+purpose.** `forget()` calls
+[`unlink()`](https://rdrr.io/r/base/unlink.html) while the transaction
+is still open. If a later step fails, mdbx rolls the metadata back to an
+entry whose blob file has already gone, and `cache_get()` on that key
+then fails to read a file the store still believes in. That is data
+loss, not garbage: the reverse of the orphan case above, and not fixable
+by collecting unreferenced files. A real implementation collects the
+paths to delete during the transaction and unlinks them only after
+[`mdbx_txn_commit()`](https://pedrobtz.github.io/mdbx/reference/mdbx_txn_commit.md)
+returns, accepting orphans on a crash in between — orphans are
+recoverable, dangling references are not.
+
+**No concurrent-writer story.** One process writes at a time; a second
+gets `MDBX_BUSY` or waits. For a cache that is usually right, but it
+wants `flags = "TRY"` and a retry rather than a blocked worker. See
+[`?"mdbx-concurrency"`](https://pedrobtz.github.io/mdbx/reference/mdbx-concurrency.md).
+
+## What carried over, and what did not
+
+The parts of SQLite this design does *not* need turn out to be most of
+it: no schema, no query planner, no SQL, no joins. What it does need —
+sorted keys, bounded ordered scans, atomic multi-step writes, and a
+counter — mdbx provides directly, and a named database per index is a
+closer fit to the intent than a table plus `CREATE INDEX`.
+
+What genuinely gets harder is that **every ordering decision moves into
+the key encoding**, where it is your problem rather than the engine’s.
+SQLite knows that `expire_time` is a number. mdbx knows only bytes, and
+`be8()` above is the whole difference between an index that works and
+one that quietly returns nonsense.
