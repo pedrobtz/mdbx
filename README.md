@@ -3,6 +3,7 @@
 
 <!-- badges: start -->
 [![R-CMD-check](https://github.com/pedrobtz/mdbx/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/pedrobtz/mdbx/actions/workflows/R-CMD-check.yaml)
+[![coverage](https://raw.githubusercontent.com/pedrobtz/mdbx/main/.github/badges/coverage.svg)](https://github.com/pedrobtz/mdbx/actions/workflows/coverage.yaml)
 <!-- badges: end -->
 
 R bindings to [libmdbx](https://libmdbx.dqdkfa.ru/), a compact and fast transactional key-value

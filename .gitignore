@@ -47,3 +47,8 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+# gcov artifacts from covr::package_coverage()
+*.gcno
+*.gcda
+*.gcov

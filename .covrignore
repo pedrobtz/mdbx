@@ -1,0 +1,8 @@
+# The vendored libmdbx amalgamation is third-party code compiled into the
+# package, not code this package's tests are meant to exercise. It is ~22k
+# expressions against ~1k of first-party source, so counting it makes the
+# overall figure a measure of libmdbx's internals rather than of this binding.
+#
+# covr reads this file automatically; the reusable coverage workflow calls
+# covr::package_coverage() with no arguments, so this is the only hook.
+src/vendor
