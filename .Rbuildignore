@@ -12,3 +12,6 @@
 ^tools$
 ^cran-comments\.md$
 ^\.covrignore$
+^.*\.Rproj$
+^\.Rproj\.user$
+^CRAN-SUBMISSION$
