@@ -1,0 +1,42 @@
+# libmdbx is vendored as amalgamated source (src/vendor/libmdbx) and compiled
+# straight into this package's shared object. See .agents/vendoring.md for the
+# pin and tools/patches/ for the local modifications.
+#
+# Neither LIBMDBX_EXPORTS nor LIBMDBX_IMPORTS is defined, which leaves
+# LIBMDBX_API empty -- correct for a static build. -D__dll_export= additionally
+# neutralises LIBMDBX_VERINFO_API, which is otherwise unconditionally exported.
+#
+# MDBX_BUILD_FLAGS silences a #warning in mdbx.c; the value is only reported
+# through mdbx_build.flags and is space-free to survive make/shell quoting.
+#
+# Optimisation, PIC and ABI flags are deliberately left to R.
+PKG_CPPFLAGS = -Ivendor/libmdbx \
+	-D__dll_export= \
+	-DMDBX_BUILD_FLAGS='"R-CMD-SHLIB"' \
+	-DMDBX_ENV_CHECKPID=1 \
+	-DMDBX_TXN_CHECKOWNER=1
+
+PKG_LIBS = -pthread
+
+# R only globs sources in src/ itself, so the vendored amalgamation has to be
+# named explicitly. Keep this list in sync when adding a source file.
+OBJECTS = \
+	cpp11.o \
+	r_flags.o \
+	r_mdbx.o \
+	r_mdbx_hooks.o \
+	vendor/libmdbx/mdbx.o
+
+# R CMD SHLIB passes this file to make BEFORE shlib.mk, so the first rule here
+# becomes make's default goal. Restating shlib.mk's own default keeps the clean
+# target below from hijacking the build. Keep `all` first among the rules.
+all: $(SHLIB)
+
+# R CMD build's src cleanup only globs *.o in src/ itself; the vendored libmdbx
+# object is compiled into a subdirectory and would otherwise be shipped in the
+# tarball ("Found the following apparent object files/libraries" NOTE). Build
+# runs this as `make -f Makeconf -f clean.mk -f Makevars clean`, where $(SHLIB)
+# is unset and the top-level src/*.o and src/*.so are removed by build itself.
+.PHONY: all clean
+clean:
+	rm -f $(OBJECTS) $(SHLIB)

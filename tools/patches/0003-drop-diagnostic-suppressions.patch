@@ -1,0 +1,92 @@
+Subject: Drop GCC/clang diagnostic suppressions
+
+`R CMD check` reports "checking pragmas in C/C++ headers and code" for any line
+matching ^\s*#pragma (GCC|clang) diagnostic ignored, and additionally calls the
+file non-portable when the suppressed warning is on R's non-portable list
+(-Wcast-function-type here).
+
+Remove the nine such lines: -Wpedantic and -Wcast-function-type in mdbx.c, and
+-Wattributes, -Wnested-anon-types, -Wconstant-logical-operand and
+-Walignment-reduction-ignored in mdbx-internals.h.
+
+This changes no generated code, only whether warnings are printed. The
+surrounding #pragma GCC diagnostic push/pop pairs are left intact, as is every
+MSVC #pragma warning(disable: ...) -- R's check does not match those, and they
+still protect the Windows build.
+
+Removing a suppression is only safe while the underlying warning does not
+actually fire. Verified warning-free on Apple clang 21 / macOS arm64. If a
+toolchain does emit one of these, restore that single pragma and record it as a
+known exception rather than reverting the whole patch.
+
+Rejected alternative: rewriting these as _Pragma("GCC diagnostic ignored ...")
+would keep the suppression while evading the check's line-anchored text scan.
+That circumvents the check's intent rather than satisfying it.
+
+--- a/src/vendor/libmdbx/mdbx.c
++++ b/src/vendor/libmdbx/mdbx.c
+@@ -29916,7 +29916,7 @@
+ #pragma warning(disable : 4740) /* flow in or out of inline asm code suppresses global optimization */
+ #elif defined(__GNUC__)
+ #pragma GCC diagnostic push
+-#pragma GCC diagnostic ignored "-Wpedantic"
++/* R package patch: diagnostic suppression removed. See tools/patches. */
+ #endif
+ #endif /* IS_WINDOWS && !MDBX_NATIVE_SEH */
+ int osal_fastmutex_acquire(osal_fastmutex_t *fastmutex) {
+@@ -42663,7 +42663,7 @@
+ 
+ #if __GNUC_PREREQ(8, 0)
+ #pragma GCC diagnostic push
+-#pragma GCC diagnostic ignored "-Wcast-function-type"
++/* R package patch: diagnostic suppression removed. See tools/patches. */
+ #endif /* GCC/MINGW */
+ 
+ #define MDBX_IMPORT(HANDLE, ENTRY) imports.ENTRY = (MDBX_##ENTRY)GetProcAddress(HANDLE, #ENTRY)
+--- a/src/vendor/libmdbx/mdbx-internals.h
++++ b/src/vendor/libmdbx/mdbx-internals.h
+@@ -188,7 +188,7 @@
+ #endif                          /* _MSC_VER (warnings) */
+ 
+ #if defined(__GNUC__) && __GNUC__ < 9
+-#pragma GCC diagnostic ignored "-Wattributes"
++/* R package patch: diagnostic suppression removed. See tools/patches. */
+ #endif /* GCC < 9 */
+ 
+ #include "mdbx.h"
+@@ -1061,9 +1061,9 @@
+ 
+ #if __has_warning("-Wnested-anon-types")
+ #if defined(__clang__)
+-#pragma clang diagnostic ignored "-Wnested-anon-types"
++/* R package patch: diagnostic suppression removed. See tools/patches. */
+ #elif defined(__GNUC__)
+-#pragma GCC diagnostic ignored "-Wnested-anon-types"
++/* R package patch: diagnostic suppression removed. See tools/patches. */
+ #else
+ #pragma warning disable "nested-anon-types"
+ #endif
+@@ -1071,9 +1071,9 @@
+ 
+ #if __has_warning("-Wconstant-logical-operand")
+ #if defined(__clang__)
+-#pragma clang diagnostic ignored "-Wconstant-logical-operand"
++/* R package patch: diagnostic suppression removed. See tools/patches. */
+ #elif defined(__GNUC__)
+-#pragma GCC diagnostic ignored "-Wconstant-logical-operand"
++/* R package patch: diagnostic suppression removed. See tools/patches. */
+ #else
+ #pragma warning disable "constant-logical-operand"
+ #endif
+@@ -1086,9 +1086,9 @@
+ #pragma warning(disable : 3453 1366)
+ #elif __has_warning("-Walignment-reduction-ignored")
+ #if defined(__clang__)
+-#pragma clang diagnostic ignored "-Walignment-reduction-ignored"
++/* R package patch: diagnostic suppression removed. See tools/patches. */
+ #elif defined(__GNUC__)
+-#pragma GCC diagnostic ignored "-Walignment-reduction-ignored"
++/* R package patch: diagnostic suppression removed. See tools/patches. */
+ #else
+ #pragma warning disable "alignment-reduction-ignored"
+ #endif

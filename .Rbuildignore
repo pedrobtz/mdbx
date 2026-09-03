@@ -1,0 +1,13 @@
+^\.github$
+^LICENSE\.md$
+^\.agents$
+^AGENTS\.md$
+^CLAUDE\.md$
+^mdbx_.*\.tar\.gz$
+^mdbx\.Rcheck$
+^vignettes/articles$
+^_pkgdown\.yml$
+^docs$
+^pkgdown$
+^tools$
+^cran-comments\.md$

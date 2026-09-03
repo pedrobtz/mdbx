@@ -1,0 +1,67 @@
+Subject: Read NT_TIB::Self without __readgsqword() on MinGW GCC
+
+Rtools45 ships MinGW-w64 11, whose `__readgsqword()` is written so that GCC
+models the GS-relative offset as an ordinary address. GCC 14 then decides
+`NtCurrentTeb()` dereferences memory near address 0x30 and reports
+-Warray-bounds from inside `psdk_inc/intrin-impl.h`. `R CMD check` classifies
+that as a significant warning on the Windows leg.
+
+Nothing is actually out of bounds -- it is a toolchain-header false positive,
+unrelated to libmdbx or to the other patches in this series. But it fires only
+where mdbx.c uses `NtCurrentTeb()`, which is the two SEH sites below, so it can
+be avoided at the source: read the same NT_TIB::Self slot with one inline asm
+load, without the misleading pointer model. Newer MinGW-w64 headers define
+`NtCurrentTeb()` this way themselves, so this patch becomes a no-op once Rtools
+ships them -- the guard is narrowed to MinGW + GCC (not clang) + x86_64.
+
+The alternative, `PKG_CFLAGS = -Wno-array-bounds` in `src/Makevars.win`, trades
+the warning for a "checking compilation flags used" WARNING: Writing R
+Extensions treats `-Wno-*` as non-portable and warns that suppressing
+diagnostics hides real problems on untested platforms. Generating the flag from
+`configure.win` is called out as unsafe for the same reason.
+
+Unlike patches 0001 and 0002, this one needs no support from
+`src/r_mdbx_hooks.cpp`; and unlike 0003 it does change generated code, though
+only on MinGW GCC and only in how the TEB pointer is loaded.
+
+--- a/src/vendor/libmdbx/mdbx.c
++++ b/src/vendor/libmdbx/mdbx.c
+@@ -29852,6 +29852,20 @@ typedef struct seh_simple_context {
+   void *recovery; /* address of recovery/handling/finalization code */
+ } seh_ctx_t;
+ 
++#if defined(__MINGW32__) && defined(__GNUC__) && !defined(__clang__) && defined(__x86_64__)
++/* Rtools45 ships MinGW-w64 11, whose __readgsqword() models the GS offset as
++ * an ordinary address. GCC 14 consequently diagnoses NtCurrentTeb() as an
++ * out-of-bounds access. Read the same NT_TIB::Self slot directly without the
++ * false pointer model; newer MinGW-w64 headers use this form themselves. */
++static __always_inline NT_TIB *osal_current_tib(void) {
++  NT_TIB *tib;
++  __asm__("movq %%gs:%c1, %0" : "=r"(tib) : "i"(offsetof(NT_TIB, Self)) : "memory");
++  return tib;
++}
++#else
++#define osal_current_tib() ((NT_TIB *)NtCurrentTeb())
++#endif
++
+ EXCEPTION_DISPOSITION NTAPI
+ #ifdef _Function_class_
+ _Function_class_(EXCEPTION_ROUTINE)
+@@ -29861,7 +29875,7 @@ _Function_class_(EXCEPTION_ROUTINE)
+   (void)DispatcherContext;
+   (void)EstablisherFrame;
+   if (pExceptionRecord->ExceptionCode) {
+-    NT_TIB *const TIB = (NT_TIB *)NtCurrentTeb();
++    NT_TIB *const TIB = osal_current_tib();
+     seh_ctx_t *seh = (seh_ctx_t *)TIB->ExceptionList;
+ #ifndef EXCEPTION_CHAIN_END
+ #define EXCEPTION_CHAIN_END ((PEXCEPTION_REGISTRATION_RECORD) - 1)
+@@ -29892,7 +29906,7 @@ _Function_class_(EXCEPTION_ROUTINE)
+ 
+ #define SEH_TRY(catch)                                                                                                 \
+   seh_ctx_t _seh_ctx;                                                                                                  \
+-  NT_TIB *const _TIB = (NT_TIB *)NtCurrentTeb();                                                                       \
++  NT_TIB *const _TIB = osal_current_tib();                                                                             \
+   _seh_ctx.Registration.Handler = mdbx_simple_SEH;                                                                     \
+   _seh_ctx.filter = (catch);                                                                                           \
+   _SEH_SETUP_RECOVERY(_seh_ctx, _seh_recovery)                                                                         \

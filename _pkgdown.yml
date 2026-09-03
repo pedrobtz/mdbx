@@ -1,0 +1,67 @@
+url: https://pedrobtz.github.io/mdbx/
+
+# Two sites from one repository: `main` carries a release version and builds to
+# the root, `develop` carries a x.y.9000 version and builds to /dev/. `auto`
+# reads the version number to decide, so nothing here changes at release time.
+development:
+  mode: auto
+
+template:
+  bootstrap: 5
+
+reference:
+- title: Environments
+  desc: Opening, closing and inspecting the file that holds the data.
+  contents:
+  - mdbx_env_open
+  - mdbx_env_close
+  - mdbx_env_is_open
+  - mdbx_env_stat
+  - mdbx_env_info
+  - mdbx_limits
+  - mdbx_env_reader_check
+
+- title: Transactions
+  desc: >
+    Every read and write happens inside one. The `with_*` helpers cover most
+    uses; the rest are for driving a transaction by hand.
+  contents:
+  - mdbx_with_write
+  - mdbx_txn_begin
+  - mdbx_txn_commit
+  - mdbx_txn_abort
+  - mdbx_txn_state
+
+- title: Reading and writing
+  contents:
+  - mdbx_get
+  - mdbx_put
+  - mdbx_del
+
+- title: Named databases
+  desc: >
+    An environment can hold several independent key spaces; the unnamed main
+    database is the default everywhere.
+  contents:
+  - mdbx_dbi_open
+  - mdbx_dbi_drop
+  - mdbx_dbi_list
+  - mdbx_dbi_sequence
+  - mdbx_keys
+  - mdbx_items
+  - mdbx_scan_max
+
+- title: Durability and flags
+  desc: >
+    Every commit is durable by default; these trade that for speed.
+  contents:
+  - mdbx_flags
+  - mdbx_env_get_flags
+  - mdbx_env_set_flags
+  - mdbx_env_sync
+
+- title: About the package
+  contents:
+  - mdbx-package
+  - mdbx-concurrency
+  - mdbx_version
