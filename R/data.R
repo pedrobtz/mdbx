@@ -11,7 +11,8 @@
 #'
 #' A key that is not present returns `default` (`NULL` unless you say
 #' otherwise). That is unambiguous: a *stored* zero-length value comes back as
-#' `raw(0)`, which is not `NULL`, so absence and emptiness stay distinguishable.
+#' `""` under the default decoding, or as `raw(0)` with `as = "raw"`. Neither
+#' is `NULL`, so absence and emptiness stay distinguishable either way.
 #'
 #' By default the stored bytes are decoded as UTF-8 text, so a value written as
 #' a string comes back as one. MDBX records no type, so this is an assumption

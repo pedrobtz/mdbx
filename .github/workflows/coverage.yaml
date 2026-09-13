@@ -15,6 +15,10 @@ permissions:
 
 jobs:
   coverage:
-    uses: pedrobtz/r-actions/.github/workflows/coverage.yml@v1
+    # Pinned to a commit, not to @v1. This is the one job that runs with a
+    # repository write token, and a tag is mutable: whoever can move v1 can
+    # change what runs here. The deploy action in pkgdown.yaml is pinned for
+    # the same reason. Update deliberately, with the tag it corresponds to.
+    uses: pedrobtz/r-actions/.github/workflows/coverage.yml@855f8ecadc198d9e5f4f673af297a9552a0ec7a8 # v1
     permissions:
       contents: write

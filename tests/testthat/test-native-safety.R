@@ -1,3 +1,43 @@
+# Native handle safety: authentication, lifecycle, and what survives a panic.
+#
+# The entry points that dereference a native handle go through one
+# authenticator each -- env_from_sexp() and txn_from_sexp() -- so most of them
+# share the tests below rather than needing one apiece. What does need its own
+# row is any entry point that deliberately bypasses the authenticator to stay
+# state-tolerant or idempotent: mdbx_env_close(), mdbx_env_is_open(),
+# mdbx_txn_abort() and mdbx_txn_state(). Those four are why this file exists;
+# three of them once read a handle before checking that it was theirs.
+#
+# The states worth crossing, and where each is covered:
+#
+#   External pointer  genuine ............. every test here
+#                     wrong tag ........... "identified by its tag"
+#                     unrelated pointer ... "identified by its tag" (stranger)
+#                     cleared pointer ..... not reachable from R: the address is
+#                                           cleared only by the finalizer, which
+#                                           runs on an object already
+#                                           unreachable. A foreign pointer is
+#                                           null too, and the tag refuses it
+#                                           first.
+#   Transaction       active/committed/aborted ... test-txn.R
+#                     failed .............. test-txn.R, after MDBX_MAP_FULL
+#                     poisoned ............ "panic in a transaction operation"
+#   Owner             open ................ every test here
+#                     closed/detached ..... "a transaction outliving its
+#                                           environment", and test-txn.R's
+#                                           simultaneous finalization
+#                     poisoned ............ "panic with a live transaction"
+#   Process           creator ............. every test here
+#                     forked child ........ test-fork.R
+#   Cleanup order     transaction first ... "panic with a live transaction"
+#                     environment first ... "closing a poisoned environment"
+#                     GC first ............ "leaves no transaction registered",
+#                                           and test-txn.R
+#
+# Adding an entry point that touches a handle means placing it in that grid:
+# either it uses the central authenticator and is covered, or it does not and
+# needs a row.
+
 test_that("package initialization silences the libmdbx after-fork notice", {
   skip_if_cannot_fork()
 
@@ -92,6 +132,13 @@ test_that("a handle is identified by its tag, not by its class attribute", {
   expect_error(mdbx_get(env2, "k"), "expected an 'mdbx_txn' object")
   expect_error(mdbx_txn_commit(env2), "expected an 'mdbx_txn' object")
 
+  # The state-tolerant entry points have to authenticate too, and used not to:
+  # they checked the class and then read an env_handle through the txn_handle
+  # layout. mdbx_txn_state() answered "aborted" for this, having read the
+  # environment's pid where a txn_state belongs.
+  expect_error(mdbx_txn_state(env2), "expected an 'mdbx_txn' object")
+  expect_error(mdbx_txn_abort(env2), "expected an 'mdbx_txn' object")
+
   # R has no way to set an external pointer's tag, so a pointer from anywhere
   # else cannot be dressed up as either handle.
   stranger <- methods::new("externalptr")
@@ -99,8 +146,184 @@ test_that("a handle is identified by its tag, not by its class attribute", {
   expect_error(mdbx_env_stat(stranger), "expected an 'mdbx_env' object")
   expect_error(mdbx_env_close(stranger), "expected an 'mdbx_env' object")
 
+  another <- methods::new("externalptr")
+  class(another) <- "mdbx_txn"
+  expect_error(mdbx_txn_state(another), "expected an 'mdbx_txn' object")
+  expect_error(mdbx_txn_abort(another), "expected an 'mdbx_txn' object")
+  expect_error(mdbx_txn_commit(another), "expected an 'mdbx_txn' object")
+  expect_error(mdbx_get(another, "k"), "expected an 'mdbx_txn' object")
+
   # The genuine article is unaffected.
   env3 <- local_env()
   expect_type(mdbx_env_stat(env3), "list")
   expect_true(mdbx_env_is_open(env3))
+
+  # Including a finished transaction, which stays queryable and idempotently
+  # abortable: authentication is not an excuse to forget its outcome.
+  done <- mdbx_txn_begin(env3)
+  mdbx_txn_abort(done)
+  expect_identical(mdbx_txn_state(done), "aborted")
+  expect_silent(mdbx_txn_abort(done))
+
+  committed <- mdbx_txn_begin(env3, write = TRUE)
+  mdbx_txn_commit(committed)
+  expect_identical(mdbx_txn_state(committed), "committed")
+  expect_silent(mdbx_txn_abort(committed))
+})
+
+test_that("a transaction outliving its environment reports what happened", {
+  # The owner-closed row of the grid above. Closing is refused while a
+  # transaction is live, so the only way here is to finish the transaction
+  # first -- and the object then has to keep reporting its own outcome rather
+  # than blaming the environment that has since gone.
+  env <- local_env()
+
+  aborted <- mdbx_txn_begin(env)
+  mdbx_txn_abort(aborted)
+
+  committed <- mdbx_txn_begin(env, write = TRUE)
+  mdbx_txn_commit(committed)
+
+  mdbx_env_close(env)
+
+  expect_identical(mdbx_txn_state(aborted), "aborted")
+  expect_identical(mdbx_txn_state(committed), "committed")
+
+  # The use-after-finish message is the useful one: it names what the caller
+  # did, not the environment's later fate.
+  expect_error(mdbx_get(aborted, "k"), "already aborted")
+  expect_error(mdbx_get(committed, "k"), "already committed")
+
+  expect_silent(mdbx_txn_abort(aborted))
+  expect_error(mdbx_txn_commit(committed), "already committed")
+
+  gc()
+  gc()
+  expect_identical(mdbx_txn_state(aborted), "aborted")
+  expect_identical(mdbx_version()$major, 0L)
+})
+
+test_that("a panic in a transaction operation poisons the environment too", {
+  env <- local_env()
+  txn <- mdbx_txn_begin(env)
+
+  # Every transaction-backed poison callback but the scan's used to mark the
+  # transaction alone. The finalizer then skipped the native abort a poisoned
+  # handle must not make, unregistered itself, and left the environment
+  # believing it had no transactions -- so its close handed libmdbx one that
+  # was never ended.
+  expect_error(mdbx:::mdbx_test_panic_get_(txn), "libmdbx assertion failed")
+
+  expect_identical(mdbx_txn_state(txn), "poisoned")
+  expect_false(mdbx_env_is_open(env))
+  expect_error(mdbx_env_stat(env), "unusable after a libmdbx assertion")
+})
+
+test_that("a panic with a live transaction can still be cleaned up", {
+  env <- local_env()
+  txn <- mdbx_txn_begin(env)
+
+  expect_error(mdbx:::mdbx_test_panic_stat_(env, FALSE), "libmdbx assertion failed")
+
+  # Both handles report the panic rather than a lifecycle state that is no
+  # longer true of either.
+  expect_identical(mdbx_txn_state(txn), "poisoned")
+  expect_false(mdbx_env_is_open(env))
+
+  # Neither of these may re-enter libmdbx, and neither may refuse. Refusing is
+  # what made a panic unrecoverable: abort was rejected because the environment
+  # was poisoned, and close was rejected because the transaction was still
+  # registered, so only dropping both references and forcing a GC released it.
+  expect_silent(mdbx_txn_abort(txn))
+  expect_silent(mdbx_env_close(env))
+  expect_false(mdbx_env_is_open(env))
+
+  # Once cleaned up it reads as ended rather than as poisoned: the transaction
+  # is over, and "aborted" is what the caller needs to know about its writes.
+  expect_identical(mdbx_txn_state(txn), "aborted")
+
+  # Idempotent, and stable across the finalizers that run later.
+  expect_silent(mdbx_txn_abort(txn))
+  expect_silent(mdbx_env_close(env))
+  gc()
+  gc()
+  expect_identical(mdbx_txn_state(txn), "aborted")
+  expect_identical(mdbx_version()$major, 0L)
+})
+
+test_that("both poison paths leave the same state after cleanup", {
+  # Found by the fault plans in test-state-machine-faults.R. An environment
+  # panic leaves the transaction's own flag clear and poisons only the owner,
+  # which cleanup then detaches; a transaction-level panic sets the flag on the
+  # transaction itself, where nothing clears it. Reading the flag before the
+  # lifecycle state made the first case report "aborted" and the second
+  # "poisoned" after the identical cleanup.
+  for (panic in list(
+    function(env, txn) mdbx:::mdbx_test_panic_stat_(env, FALSE),
+    function(env, txn) mdbx:::mdbx_test_panic_get_(txn)
+  )) {
+    env <- local_env()
+    txn <- mdbx_txn_begin(env, write = TRUE)
+
+    expect_error(panic(env, txn), "libmdbx assertion failed")
+    expect_identical(mdbx_txn_state(txn), "poisoned")
+
+    expect_silent(mdbx_txn_abort(txn))
+    expect_identical(mdbx_txn_state(txn), "aborted")
+    expect_silent(mdbx_env_close(env))
+  }
+
+  expect_identical(mdbx_version()$major, 0L)
+})
+
+test_that("closing a poisoned environment detaches its transactions", {
+  env <- local_env()
+  txn <- mdbx_txn_begin(env)
+
+  expect_error(mdbx:::mdbx_test_panic_stat_(env, FALSE), "libmdbx assertion failed")
+
+  # Closing goes first this time, so the detaching is the close's own work
+  # rather than something the abort already did.
+  expect_silent(mdbx_env_close(env))
+
+  # detach_txns() ended it, so it reads as aborted rather than still live.
+  expect_identical(mdbx_txn_state(txn), "aborted")
+  expect_silent(mdbx_txn_abort(txn))
+  expect_identical(mdbx_version()$major, 0L)
+})
+
+test_that("cleanup after a panic does not replace the panic", {
+  env <- local_env()
+
+  # mdbx_with_*() end their transaction from on.exit(). While abort refused a
+  # poisoned graph, that refusal was raised on the way out and became the
+  # condition the caller saw -- destroying the only message that said what
+  # libmdbx had actually found.
+  message <- conditionMessage(tryCatch(
+    mdbx_with_read(env, function(txn) mdbx:::mdbx_test_panic_stat_(env, FALSE)),
+    error = identity
+  ))
+
+  expect_match(message, "libmdbx assertion failed", fixed = TRUE)
+  expect_false(grepl("unusable after a libmdbx assertion", message, fixed = TRUE))
+
+  expect_silent(mdbx_env_close(env))
+  expect_identical(mdbx_version()$major, 0L)
+})
+
+test_that("a panic leaves no transaction registered against the environment", {
+  gc()
+  before <- mdbx:::mdbx_txn_live_count_()
+
+  local({
+    env <- local_env()
+    txn <- mdbx_txn_begin(env, write = TRUE)
+    expect_error(mdbx:::mdbx_test_panic_get_(txn), "libmdbx assertion failed")
+    mdbx_txn_abort(txn)
+    mdbx_env_close(env)
+  })
+
+  gc()
+  gc()
+  expect_identical(mdbx:::mdbx_txn_live_count_(), before)
 })

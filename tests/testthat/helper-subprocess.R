@@ -66,3 +66,12 @@ r_run <- function(code) {
 
 # A literal for interpolation into subprocess code.
 as_code <- function(x) paste(deparse(x), collapse = "")
+
+# A closed database with one record in it, for a subprocess to open.
+seeded_db <- function(key = "k", value = "v1") {
+  path <- tempfile(fileext = ".mdbx")
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  mdbx_with_write(env, function(txn) mdbx_put(txn, key, value))
+  mdbx_env_close(env)
+  path
+}

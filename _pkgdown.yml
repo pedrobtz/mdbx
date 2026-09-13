@@ -64,4 +64,5 @@ reference:
   contents:
   - mdbx-package
   - mdbx-concurrency
+  - mdbx-errors
   - mdbx_version

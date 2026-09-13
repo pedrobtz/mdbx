@@ -7,20 +7,6 @@
 # call has already dereferenced the dead mapping. These assert on the guard
 # above libmdbx that makes the misuse an ordinary R error instead.
 
-# Run `f` in a forked child and bring back its value, or its error message.
-in_fork <- function(f) {
-  job <- parallel::mcparallel(
-    tryCatch(f(), error = function(e) paste("ERROR:", conditionMessage(e)))
-  )
-  parallel::mccollect(job)[[1]]
-}
-
-local_seeded_env <- function() {
-  env <- mdbx_env_open(tempfile(fileext = ".mdbx"), map_size = test_map_size)
-  mdbx_with_write(env, function(txn) mdbx_put(txn, "k", "v"))
-  env
-}
-
 test_that("an inherited environment is refused rather than used", {
   skip_if_cannot_fork()
 
@@ -61,6 +47,11 @@ test_that("an inherited transaction is refused too", {
 
   env <- local_seeded_env()
   txn <- mdbx_txn_begin(env, write = TRUE)
+
+  # And it reports as unusable rather than "active": every operation in the
+  # child refuses it, so the state has to say so too.
+  expect_identical(in_fork(function() mdbx_txn_state(txn)), "invalid")
+  expect_identical(mdbx_txn_state(txn), "active")
 
   expect_match(in_fork(function() mdbx_get(txn, "k")), "transaction belongs to process")
   expect_match(in_fork(function() mdbx_txn_commit(txn)), "transaction belongs to process")

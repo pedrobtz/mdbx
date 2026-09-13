@@ -23,3 +23,24 @@ env_path <- function() {
 local_env <- function(..., map_size = test_map_size) {
   mdbx_env_open(env_path(), ..., map_size = map_size)
 }
+
+# An environment with room for named databases. The libmdbx default reserves
+# none, so every test that opens one by name needs this rather than local_env().
+multi_env <- function(max_dbs = 16) {
+  mdbx_env_open(env_path(), max_dbs = max_dbs, map_size = 16 * 1024^2)
+}
+
+# Deliberately larger than test_map_size: the size-limit tests store values
+# measured in megabytes, which is the point of them.
+roomy_env <- function() {
+  mdbx_env_open(env_path(), map_size = 64 * 1024^2)
+}
+
+# An environment holding exactly these keys, for the scans to walk.
+filled_env <- function(keys, values = rep("v", length(keys))) {
+  env <- local_env()
+  mdbx_with_write(env, function(txn) {
+    for (i in seq_along(keys)) mdbx_put(txn, keys[[i]], values[[i]])
+  })
+  env
+}

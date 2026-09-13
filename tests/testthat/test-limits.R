@@ -7,10 +7,6 @@
 # sanitizer only sees code the suite executes, so the boundaries have to be
 # walked deliberately.
 
-roomy_env <- function() {
-  mdbx_env_open(env_path(), map_size = 64 * 1024^2)
-}
-
 test_that("large keys and values round-trip byte-exactly", {
   env <- roomy_env()
 

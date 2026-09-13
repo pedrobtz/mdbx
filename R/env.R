@@ -264,10 +264,17 @@ env_exists <- function(path) {
 }
 
 check_string <- function(x, arg) {
-  if (!is.character(x) || length(x) != 1L || is.na(x) || !nzchar(x)) {
+  if (!is_single_string(x)) {
     stop(sprintf("`%s` must be a single non-empty string", arg), call. = FALSE)
   }
   x
+}
+
+# What every scalar string argument means, in one place: check_string() raises
+# on it, and db_name() tests the fields of an mdbx_dbi record against it. Two
+# copies would let the DBI contract drift into a second idea of a valid name.
+is_single_string <- function(x) {
+  is.character(x) && length(x) == 1L && !is.na(x) && nzchar(x)
 }
 
 check_bool <- function(x, arg) {

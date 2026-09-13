@@ -85,9 +85,18 @@ mdbx_dbi_open <- function(txn, name, create = FALSE) {
 #' removes the database itself, after which the handle refers to nothing and
 #' reopening it needs `create = TRUE` again.
 #'
+#' Emptying a database that holds records also resets its
+#' [sequence counter][mdbx_dbi_sequence] to zero, because 'libmdbx' rewrites
+#' the database's record and the counter lives in it. (Emptying one that is
+#' already empty rewrites nothing and leaves the counter alone, but that is not
+#' a distinction to build on.) Do not rely on ids minted before an emptying
+#' staying unique afterwards — if they are still referenced somewhere, remove
+#' the records by deleting their keys instead.
+#'
 #' Like every other write, this takes effect only when the transaction commits.
 #'
 #' @param txn An `mdbx_txn` object from [mdbx_txn_begin()], opened for writing.
+#'   Both emptying and deleting are writes, so a read transaction is refused.
 #' @param db An `mdbx_dbi` object from [mdbx_dbi_open()], or `NULL` for the main
 #'   database — which can be emptied but not deleted.
 #' @param delete If `TRUE`, delete the database rather than just emptying it.
@@ -115,9 +124,15 @@ mdbx_dbi_drop <- function(txn, db, delete = FALSE) {
 
 #' List the named databases in an environment
 #'
-#' Reports the named databases visible to this transaction, which is not the
-#' same as the ones it could open: a database created by a transaction that has
-#' not committed is not listed, and one deleted but not yet committed still is.
+#' Reports the named databases visible to this transaction. Visibility is the
+#' transaction's own: a database this transaction created is listed
+#' immediately, and one it deleted is gone immediately, both before any commit.
+#' What other transactions see is decided when this one commits or aborts —
+#' until then they see neither the creation nor the deletion.
+#'
+#' That makes this the way to ask whether a database exists without handling an
+#' error, which is what [mdbx_dbi_open()] raises for a name that was never
+#' created.
 #'
 #' Names are bytes, like keys, so a name that is not valid UTF-8 text needs
 #' `as = "raw"`. The unnamed main database is not listed, having no name.
@@ -157,22 +172,43 @@ print.mdbx_dbi <- function(x, ...) {
 # database, or the name. Handles carry the environment they were opened against
 # so that using one elsewhere is caught rather than silently addressing a
 # same-named database in another environment.
+#
+# The contents are checked, not just the class. An mdbx_dbi is an ordinary
+# mutable list, so `db$name <- character(0)` is something R code can do -- and
+# character(0) is exactly how the native layer spells "the main database". A
+# damaged named handle therefore used to redirect the operation rather than be
+# refused, silently, for reads and writes and drops alike. NULL stays the only
+# way to ask for the main database.
 db_name <- function(db, txn) {
   if (is.null(db)) {
     return(character(0))
   }
-  if (!inherits(db, "mdbx_dbi")) {
+  if (!inherits(db, "mdbx_dbi") || !is.list(db)) {
     stop("`db` must be an 'mdbx_dbi' object from mdbx_dbi_open(), or NULL for the main database",
          call. = FALSE)
   }
-  if (!identical(db$path, attr(txn, "path"))) {
-    stop(sprintf(
-      "this database handle belongs to the environment at '%s', not '%s'",
-      db$path, attr(txn, "path")
+
+  name <- db$name
+  path <- db$path
+
+  if (!is_single_string(name) || !is_single_string(path)) {
+    stop(paste0(
+      "`db` is not a valid 'mdbx_dbi' object: its `name` and `path` must each ",
+      "be a single non-empty string. Use mdbx_dbi_open() to obtain one, or ",
+      "NULL for the main database"
     ), call. = FALSE)
   }
-  db$name
+
+  if (!identical(path, attr(txn, "path"))) {
+    stop(sprintf(
+      "this database handle belongs to the environment at '%s', not '%s'",
+      path, attr(txn, "path")
+    ), call. = FALSE)
+  }
+
+  name
 }
+
 
 #' A database's sequence counter
 #'
@@ -187,9 +223,12 @@ db_name <- function(db, txn) {
 #' numeric order.
 #'
 #' Like every other write, an increment only stands if the transaction commits.
+#' Emptying or deleting the database can reset the counter to zero — see
+#' [mdbx_dbi_drop()].
 #'
 #' @param txn An `mdbx_txn` object from [mdbx_txn_begin()]. Incrementing needs a
-#'   write transaction; reading does not.
+#'   write transaction and is refused in a read one; reading the counter —
+#'   `increment = 0` — works in either.
 #' @param db An `mdbx_dbi` object from [mdbx_dbi_open()], or `NULL` for the main
 #'   database.
 #' @param increment How many values to reserve. `0`, the default, reads the

@@ -101,3 +101,86 @@ test_that("a panic is contained and named rather than ending the session", {
   expect_error(mdbx:::mdbx_test_panic_boundary_(), "libmdbx assertion failed")
   expect_identical(mdbx_version()$major, 0L)
 })
+
+test_that("a libmdbx status reaches R as a condition carrying the status", {
+  env <- multi_env(max_dbs = 2)
+
+  condition <- tryCatch(
+    mdbx_with_write(env, function(txn) {
+      for (i in 1:8) mdbx_dbi_open(txn, sprintf("db%d", i), create = TRUE)
+    }),
+    error = identity
+  )
+
+  # The name lower-cased is the most specific class, so a caller handles the
+  # status it cares about rather than matching English.
+  expect_s3_class(condition, "mdbx_dbs_full")
+  expect_s3_class(condition, "mdbx_error")
+  expect_s3_class(condition, "error")
+
+  expect_identical(condition$name, "MDBX_DBS_FULL")
+  expect_identical(condition$code, mdbx:::mdbx_test_error_codes_()[["MDBX_DBS_FULL"]])
+  expect_match(conditionMessage(condition), "MDBX_DBS_FULL", fixed = TRUE)
+
+  mdbx_env_close(env)
+})
+
+test_that("handling by class needs no knowledge of the message", {
+  env <- multi_env(max_dbs = 2)
+
+  caught <- tryCatch(
+    mdbx_with_write(env, function(txn) {
+      for (i in 1:8) mdbx_dbi_open(txn, sprintf("db%d", i), create = TRUE)
+    }),
+    mdbx_dbs_full = function(e) "the DBI table is full"
+  )
+
+  expect_identical(caught, "the DBI table is full")
+  mdbx_env_close(env)
+})
+
+test_that("every named status carries its own class and fields", {
+  codes <- mdbx:::mdbx_test_error_codes_()
+
+  for (name in names(codes)) {
+    condition <- tryCatch(mdbx:::mdbx_test_check_(codes[[name]]), error = identity)
+
+    expect_s3_class(condition, "mdbx_error")
+    expect_s3_class(condition, tolower(name))
+    expect_identical(condition$name, name, info = name)
+    expect_identical(condition$code, codes[[name]], info = name)
+  }
+})
+
+test_that("a system errno is an mdbx_error with no MDBX name", {
+  # libmdbx passes errno values through untouched, and they have no symbolic
+  # MDBX name -- so there is no subclass to invent for them either.
+  condition <- tryCatch(mdbx:::mdbx_test_check_(13L), error = identity)
+
+  expect_s3_class(condition, "mdbx_error")
+  expect_identical(condition$code, 13L)
+  expect_identical(condition$name, NA_character_)
+  expect_identical(class(condition), c("mdbx_error", "error", "condition"))
+})
+
+test_that("this package's own refusals are not mdbx_error", {
+  # They report a mistake in the calling code rather than a status the
+  # database reached: nothing to retry, and no code to inspect.
+  env <- local_env()
+
+  refusals <- list(
+    function() mdbx_with_read(env, function(txn) mdbx_put(txn, "k", "v")),
+    function() mdbx_env_open(attr(env, "path"), map_size = test_map_size),
+    function() mdbx_txn_begin(env, write = "yes"),
+    function() mdbx_env_stat(env, db = 1)
+  )
+
+  for (refusal in refusals) {
+    condition <- tryCatch(refusal(), error = identity)
+    expect_s3_class(condition, "error")
+    expect_false(inherits(condition, "mdbx_error"))
+    expect_null(condition$code)
+  }
+
+  mdbx_env_close(env)
+})

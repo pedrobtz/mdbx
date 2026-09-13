@@ -1,9 +1,5 @@
 # Named databases: independent key spaces inside one environment.
 
-multi_env <- function(max_dbs = 16) {
-  mdbx_env_open(env_path(), max_dbs = max_dbs, map_size = 16 * 1024^2)
-}
-
 test_that("named databases are independent key spaces", {
   env <- multi_env()
 
@@ -233,6 +229,32 @@ test_that("max_dbs bounds how many can exist", {
   mdbx_env_close(env)
 })
 
+test_that("every named-database write names a read-only transaction", {
+  env <- multi_env()
+  mdbx_with_write(env, function(txn) mdbx_dbi_open(txn, "here", create = TRUE))
+
+  # mdbx_put() and mdbx_del() have always pre-empted libmdbx's bare EACCES for
+  # this. These three are writes too, and did not.
+  mdbx_with_read(env, function(txn) {
+    db <- mdbx_dbi_open(txn, "here")
+    readonly <- "this mdbx transaction is read-only"
+
+    expect_error(mdbx_dbi_drop(txn, db), readonly)
+    expect_error(mdbx_dbi_drop(txn, db, delete = TRUE), readonly)
+    expect_error(mdbx_dbi_sequence(txn, db, 1), readonly)
+
+    # And the create = TRUE refusal, which names the flag rather than the
+    # operation, because libmdbx checks it before looking the database up.
+    expect_error(mdbx_dbi_open(txn, "new", create = TRUE),
+                 "create = TRUE needs a write transaction")
+
+    # Nothing was done on the way out of any of them.
+    expect_identical(mdbx_dbi_list(txn), "here")
+  })
+
+  mdbx_env_close(env)
+})
+
 test_that("a handle cannot be used against a different environment", {
   one <- multi_env()
   two <- multi_env()
@@ -273,6 +295,43 @@ test_that("a database can be emptied or deleted", {
   mdbx_env_close(env)
 })
 
+test_that("a listing shows what this transaction did, before it commits", {
+  env <- multi_env()
+
+  # The documentation used to say the reverse of each of these.
+  mdbx_with_write(env, function(txn) {
+    mdbx_dbi_open(txn, "made", create = TRUE)
+    expect_identical(mdbx_dbi_list(txn), "made")
+  })
+
+  mdbx_with_write(env, function(txn) {
+    mdbx_dbi_drop(txn, mdbx_dbi_open(txn, "made"), delete = TRUE)
+    expect_identical(mdbx_dbi_list(txn), character(0))
+  })
+
+  # What other transactions see is settled by the commit or abort, not before
+  # it -- so an uncommitted creation is invisible outside its own transaction,
+  # and so is an uncommitted deletion.
+  txn <- mdbx_txn_begin(env, write = TRUE)
+  mdbx_dbi_open(txn, "pending", create = TRUE)
+  expect_identical(mdbx_dbi_list(txn), "pending")
+  mdbx_txn_abort(txn)
+
+  expect_identical(mdbx_with_read(env, function(txn) mdbx_dbi_list(txn)), character(0))
+
+  mdbx_with_write(env, function(txn) mdbx_dbi_open(txn, "kept", create = TRUE))
+
+  doomed <- mdbx_txn_begin(env, write = TRUE)
+  mdbx_dbi_drop(doomed, mdbx_dbi_open(doomed, "kept"), delete = TRUE)
+  expect_identical(mdbx_dbi_list(doomed), character(0))
+  mdbx_txn_abort(doomed)
+
+  # The abort put it back.
+  expect_identical(mdbx_with_read(env, function(txn) mdbx_dbi_list(txn)), "kept")
+
+  mdbx_env_close(env)
+})
+
 test_that("named databases are visible as keys of the main database", {
   # libmdbx stores them there, so this is the layout showing through rather
   # than a leak -- worth pinning down so it is not mistaken for a bug later.
@@ -307,6 +366,79 @@ test_that("the db argument is validated", {
   mdbx_env_close(env)
 })
 
+test_that("a damaged db handle is refused, not redirected", {
+  env <- multi_env()
+
+  mdbx_with_write(env, function(txn) {
+    mdbx_put(txn, "k", "main")
+    db <- mdbx_dbi_open(txn, "named", create = TRUE)
+    mdbx_put(txn, "k", "named", db = db)
+  })
+
+  # An mdbx_dbi is an ordinary mutable list, and character(0) is how the native
+  # layer spells "the main database". A handle whose name became character(0)
+  # therefore used to answer from the main database rather than be refused --
+  # silently changing which database the call addressed.
+  broken_names <- list(character(0), "", NA_character_, c("a", "b"), NULL, 42)
+  broken_paths <- list(character(0), "", NA_character_, c("a", "b"), NULL, 42)
+
+  mdbx_with_read(env, function(txn) {
+    good <- mdbx_dbi_open(txn, "named")
+
+    for (value in broken_names) {
+      db <- good
+      db$name <- value
+      expect_error(mdbx_get(txn, "k", db = db), "not a valid 'mdbx_dbi'")
+      expect_error(mdbx_keys(txn, db = db), "not a valid 'mdbx_dbi'")
+      expect_error(mdbx_env_stat(txn, db = db), "not a valid 'mdbx_dbi'")
+    }
+
+    for (value in broken_paths) {
+      db <- good
+      db$path <- value
+      expect_error(mdbx_get(txn, "k", db = db), "not a valid 'mdbx_dbi'")
+    }
+
+    # Fabricated rather than damaged, and the atomic case that cannot even be
+    # indexed with `$`.
+    expect_error(mdbx_get(txn, "k", db = structure(list(), class = "mdbx_dbi")),
+                 "not a valid 'mdbx_dbi'")
+    expect_error(mdbx_get(txn, "k", db = structure("x", class = "mdbx_dbi")),
+                 "must be an 'mdbx_dbi' object")
+
+    # The refusal is an R-level input error: it touches nothing, so the
+    # transaction is still usable and both databases still read as they were.
+    expect_identical(mdbx_get(txn, "k"), "main")
+    expect_identical(mdbx_get(txn, "k", db = good), "named")
+  })
+
+  # The mutations take the same path, and must not reach the main database
+  # either. Each runs in its own transaction so a refusal cannot be mistaken
+  # for the surrounding block rolling back.
+  for (op in list(
+    function(txn, db) mdbx_put(txn, "k", "clobbered", db = db),
+    function(txn, db) mdbx_del(txn, "k", db = db),
+    function(txn, db) mdbx_dbi_drop(txn, db),
+    function(txn, db) mdbx_dbi_drop(txn, db, delete = TRUE),
+    function(txn, db) mdbx_dbi_sequence(txn, db, 1)
+  )) {
+    mdbx_with_write(env, function(txn) {
+      db <- mdbx_dbi_open(txn, "named")
+      db$name <- character(0)
+      expect_error(op(txn, db), "not a valid 'mdbx_dbi'")
+    })
+  }
+
+  # Nothing was written, deleted or dropped on the way through any of them.
+  mdbx_with_read(env, function(txn) {
+    expect_identical(mdbx_get(txn, "k"), "main")
+    expect_identical(mdbx_get(txn, "k", db = mdbx_dbi_open(txn, "named")), "named")
+    expect_identical(mdbx_dbi_list(txn), "named")
+  })
+
+  mdbx_env_close(env)
+})
+
 test_that("the handle prints as itself", {
   env <- multi_env()
   db <- mdbx_with_write(env, function(txn) mdbx_dbi_open(txn, "printed", create = TRUE))
@@ -317,7 +449,10 @@ test_that("the handle prints as itself", {
   mdbx_env_close(env)
 })
 
-test_that("the named databases can be listed", {
+test_that("a listing names every database and decodes the names", {
+  # What a listing *shows*, and how. When it shows it -- creation and deletion
+  # before a commit, and what an abort puts back -- belongs to "a listing shows
+  # what this transaction did", which covers it in full.
   env <- multi_env()
 
   mdbx_with_read(env, function(txn) expect_identical(mdbx_dbi_list(txn), character(0)))
@@ -335,14 +470,6 @@ test_that("the named databases can be listed", {
     expect_length(mdbx_dbi_list(txn, as = "raw"), 2L)
     expect_true(is.raw(mdbx_dbi_list(txn, as = "raw")[[1]]))
   })
-
-  # A database created by a transaction that aborts is never listed.
-  txn <- mdbx_txn_begin(env, write = TRUE)
-  mdbx_dbi_open(txn, "ghost", create = TRUE)
-  expect_true("ghost" %in% mdbx_dbi_list(txn))
-  mdbx_txn_abort(txn)
-
-  mdbx_with_read(env, function(txn) expect_false("ghost" %in% mdbx_dbi_list(txn)))
 
   mdbx_env_close(env)
 })
@@ -401,8 +528,44 @@ test_that("a database carries a sequence counter", {
   })
 
   mdbx_with_read(env, function(txn) {
-    expect_error(mdbx_dbi_sequence(txn, mdbx_dbi_open(txn, "ids"), 1), "mdbx error")
+    # Advancing the counter is a write; libmdbx would report a bare EACCES.
+    expect_error(mdbx_dbi_sequence(txn, mdbx_dbi_open(txn, "ids"), 1),
+                 "this mdbx transaction is read-only")
     expect_error(mdbx_dbi_sequence(txn, NULL, -1), "between 0 and")
+
+    # Reading it is not, and stays available.
+    expect_identical(mdbx_dbi_sequence(txn, mdbx_dbi_open(txn, "ids")), 12)
+    expect_identical(mdbx_dbi_sequence(txn, mdbx_dbi_open(txn, "ids"), 0), 12)
+  })
+
+  mdbx_env_close(env)
+})
+
+test_that("emptying a database resets its sequence counter", {
+  # Found by the generated sequences in test-state-machine.R: the model had
+  # assumed an empty-drop kept the counter, because "removes every record but
+  # keeps the database" reads that way. libmdbx rewrites the database record,
+  # and the counter is part of it.
+  env <- multi_env()
+
+  mdbx_with_write(env, function(txn) {
+    db <- mdbx_dbi_open(txn, "ids", create = TRUE)
+    expect_identical(mdbx_dbi_sequence(txn, db, 6), 0)
+
+    # Nothing to remove, so nothing is rewritten and the counter survives.
+    mdbx_dbi_drop(txn, db, delete = FALSE)
+    expect_identical(mdbx_dbi_sequence(txn, db), 6)
+
+    # With records to remove, the database's own entry is rewritten and the
+    # counter goes with it.
+    mdbx_put(txn, "k", "v", db = db)
+    mdbx_dbi_drop(txn, db, delete = FALSE)
+    expect_identical(mdbx_dbi_sequence(txn, db), 0)
+  })
+
+  # And it stays reset once committed, so ids are handed out again.
+  mdbx_with_read(env, function(txn) {
+    expect_identical(mdbx_dbi_sequence(txn, mdbx_dbi_open(txn, "ids")), 0)
   })
 
   mdbx_env_close(env)

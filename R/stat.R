@@ -66,6 +66,10 @@ mdbx_env_stat <- function(x, ...) {
 
 #' @export
 mdbx_env_stat.mdbx_env <- function(x, ...) {
+  # `db` in particular: a named database is resolved inside a transaction, so
+  # asking an environment about one cannot be answered rather than answered
+  # environment-wide.
+  check_dots_empty(..., call_name = "mdbx_env_stat() on an environment")
   mdbx_env_stat_(x)
 }
 
@@ -75,6 +79,7 @@ mdbx_env_stat.mdbx_env <- function(x, ...) {
 #' @rdname mdbx_env_stat
 #' @export
 mdbx_env_stat.mdbx_txn <- function(x, db = NULL, ...) {
+  check_dots_empty(..., call_name = "mdbx_env_stat() on a transaction")
   mdbx_txn_stat_(x, db_name(db, x))
 }
 
@@ -124,11 +129,15 @@ mdbx_env_info <- function(x, ...) {
 
 #' @export
 mdbx_env_info.mdbx_env <- function(x, ...) {
+  check_dots_empty(..., call_name = "mdbx_env_info() on an environment")
   mdbx_env_info_(x)
 }
 
 #' @export
 mdbx_env_info.mdbx_txn <- function(x, ...) {
+  # There is no per-database info: MDBX_envinfo describes the environment, and
+  # a transaction only changes which snapshot it is read from.
+  check_dots_empty(..., call_name = "mdbx_env_info() on a transaction")
   mdbx_txn_info_(x)
 }
 
@@ -187,4 +196,22 @@ mdbx_limits <- function(x = NULL) {
   }
 
   mdbx_limits_(pagesize)
+}
+
+# Built-in methods take `...` because the generic does, not because they use
+# it. Discarding what lands there silently is how mdbx_env_stat(env, db = x)
+# came to answer with environment-wide statistics: a plausible number for a
+# question about a named database, which only a transaction can answer.
+check_dots_empty <- function(..., call_name) {
+  dots <- list(...)
+  if (length(dots) == 0L) {
+    return(invisible(NULL))
+  }
+
+  named <- names(dots)
+  named <- if (is.null(named)) rep("", length(dots)) else named
+  labels <- ifelse(nzchar(named), sprintf("`%s`", named), "unnamed")
+
+  stop(sprintf("%s does not take %s", call_name,
+               paste(unique(labels), collapse = ", ")), call. = FALSE)
 }

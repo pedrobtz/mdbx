@@ -1,11 +1,3 @@
-filled_env <- function(keys, values = rep("v", length(keys))) {
-  env <- local_env()
-  mdbx_with_write(env, function(txn) {
-    for (i in seq_along(keys)) mdbx_put(txn, keys[[i]], values[[i]])
-  })
-  env
-}
-
 test_that("keys come back in key order, not insertion order", {
   env <- filled_env(c("banana", "apple", "cherry"))
 
@@ -210,21 +202,6 @@ test_that("the guard leaves ordinary databases alone", {
 # Ordered access: the patterns a cache index needs. Keys here are big-endian
 # integers, because byte order is the only order libmdbx has -- a key encoded
 # any other way sorts wrongly and every scan below would be meaningless.
-be32 <- function(x) {
-  x <- as.integer(x)
-  as.raw(c(x %/% 2^24 %% 256, x %/% 2^16 %% 256, x %/% 2^8 %% 256, x %% 256))
-}
-
-indexed_env <- function(times = c(500, 100, 900, 300, 700)) {
-  env <- local_env()
-  mdbx_with_write(env, function(txn) {
-    for (t in times) mdbx_put(txn, be32(t), sprintf("at-%d", t))
-  })
-  env
-}
-
-values_of <- function(x) unname(unlist(x$values))
-
 test_that("reverse walks from the last key", {
   env <- indexed_env()
 

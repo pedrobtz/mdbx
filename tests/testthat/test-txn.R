@@ -15,6 +15,38 @@ test_that("a read transaction begins, reports itself, and aborts", {
   expect_output(print(txn), "aborted")
 })
 
+test_that("state reports usability, not just whether a handle is allocated", {
+  # A transaction libmdbx has marked erroneous is not "active": every operation
+  # fails with MDBX_BAD_TXN from here on, and the commit reports a rollback.
+  env <- mdbx_env_open(env_path(), map_size = 1024^2)
+  txn <- mdbx_txn_begin(env, write = TRUE)
+
+  expect_identical(mdbx_txn_state(txn), "active")
+  expect_error(mdbx_put(txn, "k", strrep("v", 4e6)), "MDBX_MAP_FULL")
+
+  expect_identical(mdbx_txn_state(txn), "failed")
+  expect_error(mdbx_get(txn, "k"), "MDBX_BAD_TXN")
+
+  mdbx_txn_abort(txn)
+  expect_identical(mdbx_txn_state(txn), "aborted")
+  mdbx_env_close(env)
+})
+
+test_that("state reports a poisoned owner even when the transaction is clean", {
+  env <- local_env()
+  txn <- mdbx_txn_begin(env)
+
+  # The panic is in the environment, so the transaction's own flag stays clear
+  # -- but nothing can be done with it either.
+  expect_error(mdbx:::mdbx_test_panic_stat_(env, FALSE), "libmdbx assertion failed")
+
+  expect_identical(mdbx_txn_state(txn), "poisoned")
+  expect_error(mdbx_get(txn, "k"), "unusable after a libmdbx assertion")
+
+  mdbx_txn_abort(txn)
+  mdbx_env_close(env)
+})
+
 test_that("a write transaction commits", {
   env <- local_env()
 
