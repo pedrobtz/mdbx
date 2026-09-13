@@ -50,10 +50,10 @@ extern "C" SEXP _mdbx_mdbx_version_() {
   END_CPP11
 }
 // r_mdbx.cpp
-cpp11::sexp mdbx_env_open_(std::string path, bool readonly, bool subdir, double max_dbs, double map_size, double max_readers, int mode, cpp11::strings extra_flags);
-extern "C" SEXP _mdbx_mdbx_env_open_(SEXP path, SEXP readonly, SEXP subdir, SEXP max_dbs, SEXP map_size, SEXP max_readers, SEXP mode, SEXP extra_flags) {
+cpp11::sexp mdbx_env_open_(std::string path, std::string key, bool readonly, bool subdir, double max_dbs, double map_size, double max_readers, int mode, cpp11::strings extra_flags);
+extern "C" SEXP _mdbx_mdbx_env_open_(SEXP path, SEXP key, SEXP readonly, SEXP subdir, SEXP max_dbs, SEXP map_size, SEXP max_readers, SEXP mode, SEXP extra_flags) {
   BEGIN_CPP11
-    return cpp11::as_sexp(mdbx_env_open_(cpp11::as_cpp<cpp11::decay_t<std::string>>(path), cpp11::as_cpp<cpp11::decay_t<bool>>(readonly), cpp11::as_cpp<cpp11::decay_t<bool>>(subdir), cpp11::as_cpp<cpp11::decay_t<double>>(max_dbs), cpp11::as_cpp<cpp11::decay_t<double>>(map_size), cpp11::as_cpp<cpp11::decay_t<double>>(max_readers), cpp11::as_cpp<cpp11::decay_t<int>>(mode), cpp11::as_cpp<cpp11::decay_t<cpp11::strings>>(extra_flags)));
+    return cpp11::as_sexp(mdbx_env_open_(cpp11::as_cpp<cpp11::decay_t<std::string>>(path), cpp11::as_cpp<cpp11::decay_t<std::string>>(key), cpp11::as_cpp<cpp11::decay_t<bool>>(readonly), cpp11::as_cpp<cpp11::decay_t<bool>>(subdir), cpp11::as_cpp<cpp11::decay_t<double>>(max_dbs), cpp11::as_cpp<cpp11::decay_t<double>>(map_size), cpp11::as_cpp<cpp11::decay_t<double>>(max_readers), cpp11::as_cpp<cpp11::decay_t<int>>(mode), cpp11::as_cpp<cpp11::decay_t<cpp11::strings>>(extra_flags)));
   END_CPP11
 }
 // r_mdbx.cpp
@@ -308,7 +308,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_mdbx_mdbx_env_info_",             (DL_FUNC) &_mdbx_mdbx_env_info_,             1},
     {"_mdbx_mdbx_env_is_open_",          (DL_FUNC) &_mdbx_mdbx_env_is_open_,          1},
     {"_mdbx_mdbx_env_live_count_",       (DL_FUNC) &_mdbx_mdbx_env_live_count_,       0},
-    {"_mdbx_mdbx_env_open_",             (DL_FUNC) &_mdbx_mdbx_env_open_,             8},
+    {"_mdbx_mdbx_env_open_",             (DL_FUNC) &_mdbx_mdbx_env_open_,             9},
     {"_mdbx_mdbx_env_open_count_",       (DL_FUNC) &_mdbx_mdbx_env_open_count_,       0},
     {"_mdbx_mdbx_env_path_",             (DL_FUNC) &_mdbx_mdbx_env_path_,             1},
     {"_mdbx_mdbx_env_reader_check_",     (DL_FUNC) &_mdbx_mdbx_env_reader_check_,     1},

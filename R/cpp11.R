@@ -24,8 +24,8 @@ mdbx_version_ <- function() {
   .Call(`_mdbx_mdbx_version_`)
 }
 
-mdbx_env_open_ <- function(path, readonly, subdir, max_dbs, map_size, max_readers, mode, extra_flags) {
-  .Call(`_mdbx_mdbx_env_open_`, path, readonly, subdir, max_dbs, map_size, max_readers, mode, extra_flags)
+mdbx_env_open_ <- function(path, key, readonly, subdir, max_dbs, map_size, max_readers, mode, extra_flags) {
+  .Call(`_mdbx_mdbx_env_open_`, path, key, readonly, subdir, max_dbs, map_size, max_readers, mode, extra_flags)
 }
 
 mdbx_env_close_ <- function(env) {

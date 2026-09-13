@@ -88,9 +88,12 @@ One handle per environment per process. 'libmdbx' documents opening an
 environment more than once from a single process as an error, so a second
 call on a path this process already has open is refused whatever its other
 arguments say — keep the handle you were given and share it, or close it
-first. Other processes are unaffected: opening the same environment
-concurrently from several of them is the normal case, and the one
-\link{mdbx-concurrency} is about.
+first. The refusal looks past the spelling: a relative path and an absolute
+one, a symlinked directory, and the \code{mdbx.dat} inside a \code{subdir = TRUE}
+environment all name the environment they resolve to, and the message says
+which spelling the open handle was created under. Other processes are
+unaffected: opening the same environment concurrently from several of them
+is the normal case, and the one \link{mdbx-concurrency} is about.
 }
 \examples{
 path <- tempfile(fileext = ".mdbx")

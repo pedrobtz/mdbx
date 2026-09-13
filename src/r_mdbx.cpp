@@ -90,18 +90,20 @@ void unregister_env(env_handle *handle) {
                   open_envs.end());
 }
 
-// The open handle for `path`, or null.
+// The open handle keyed by `key`, or null.
 //
 // Entries inherited across a fork() are skipped: the vector is copied into the
 // child along with everything else, but the environments it names belong to
 // the parent, and the child is entitled to open them itself.
 //
-// Paths are compared as R spelled them, so two spellings of one file -- a
-// symlink, or a relative path alongside an absolute one -- are not recognised
-// as the same environment. libmdbx still refuses that, just in its own words.
-env_handle *find_open_env(const std::string &path) {
+// Keys are compared as strings, which is why env_key() in R/env.R canonicalises
+// them first: it resolves the directory, `.` and `..` and any symlink among
+// them, and names a directory-layout environment by its data file, so that the
+// spellings of one environment arrive here identical. What it cannot resolve is
+// a path whose own directory does not exist, and no environment can live there.
+env_handle *find_open_env(const std::string &key) {
   for (env_handle *handle : open_envs) {
-    if (handle->path == path && handle->pid == current_pid())
+    if (handle->key == key && handle->pid == current_pid())
       return handle;
   }
   return nullptr;
@@ -822,9 +824,10 @@ cpp11::list mdbx_version_() {
 // receives normalized values, where a non-positive max_dbs or map_size means
 // "leave the MDBX default alone".
 [[cpp11::register]]
-cpp11::sexp mdbx_env_open_(std::string path, bool readonly, bool subdir,
-                           double max_dbs, double map_size, double max_readers,
-                           int mode, cpp11::strings extra_flags) {
+cpp11::sexp mdbx_env_open_(std::string path, std::string key, bool readonly,
+                           bool subdir, double max_dbs, double map_size,
+                           double max_readers, int mode,
+                           cpp11::strings extra_flags) {
   // The named arguments come first, then whatever `flags` added; RDONLY and
   // NOSUBDIR are rejected in R precisely so the two cannot contradict.
   unsigned flags = MDBX_ENV_DEFAULTS | mdbx_r::env_flags_from_names(extra_flags);
@@ -846,10 +849,20 @@ cpp11::sexp mdbx_env_open_(std::string path, bool readonly, bool subdir,
 
   // libmdbx would report the lock file's own failure -- EAGAIN, MDBX_BUSY or
   // whatever the platform raises -- none of which says what happened. Name it.
-  if (mdbx_r::find_open_env(path) != nullptr)
-    cpp11::stop("mdbx environment '%s' is already open in this process; use "
-                "the existing handle, or close it before opening it again",
-                path.c_str());
+  //
+  // The incumbent's own spelling goes in the message when it differs from the
+  // one being refused: the caller matched it on the canonical key, so without
+  // it they are told that a path they did not write is already open.
+  if (mdbx_r::env_handle *incumbent = mdbx_r::find_open_env(key)) {
+    if (incumbent->path == path)
+      cpp11::stop("mdbx environment '%s' is already open in this process; use "
+                  "the existing handle, or close it before opening it again",
+                  path.c_str());
+    cpp11::stop("mdbx environment '%s' is already open in this process, as "
+                "'%s'; use the existing handle, or close it before opening it "
+                "again",
+                path.c_str(), incumbent->path.c_str());
+  }
 
   // The handle is allocated before the external pointer so that a failure to
   // open leaves nothing for R to reclaim; on success it is handed straight to
@@ -892,6 +905,7 @@ cpp11::sexp mdbx_env_open_(std::string path, bool readonly, bool subdir,
   // directory, and print.mdbx_env() said "single file" for it.
   const bool actual_subdir = (context.actual_flags & MDBX_NOSUBDIR) == 0;
 
+  handle->key = key;
   handle->path = path;
 
   // Registered only once the external pointer exists, so that a failure to
@@ -1532,9 +1546,15 @@ void mdbx_dbi_open_(cpp11::sexp txn, std::string name, bool create) {
 
   // Creating a database is a write. libmdbx would report a bare EACCES, the
   // same status writable_txn() already refuses to pass on for mdbx_put().
+  //
+  // libmdbx refuses on the flag, before it looks for the database, so this is
+  // reached whether or not the database already exists. The message says the
+  // flag needs a write transaction rather than that creation was impossible,
+  // which would describe something the caller may not have asked for.
   if (create && !handle->write)
-    cpp11::stop("cannot create a named database in a read-only transaction; "
-                "begin one with write = TRUE");
+    cpp11::stop("create = TRUE needs a write transaction; this mdbx "
+                "transaction is read-only, so begin one with write = TRUE, or "
+                "pass create = FALSE to open a database that already exists");
 
   mdbx_r::dbi_context context = {
       handle, name.c_str(),

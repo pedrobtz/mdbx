@@ -20,9 +20,12 @@
 #' environment more than once from a single process as an error, so a second
 #' call on a path this process already has open is refused whatever its other
 #' arguments say — keep the handle you were given and share it, or close it
-#' first. Other processes are unaffected: opening the same environment
-#' concurrently from several of them is the normal case, and the one
-#' [mdbx-concurrency] is about.
+#' first. The refusal looks past the spelling: a relative path and an absolute
+#' one, a symlinked directory, and the `mdbx.dat` inside a `subdir = TRUE`
+#' environment all name the environment they resolve to, and the message says
+#' which spelling the open handle was created under. Other processes are
+#' unaffected: opening the same environment concurrently from several of them
+#' is the normal case, and the one [mdbx-concurrency] is about.
 #'
 #' @param path Path to the environment. With `subdir = FALSE` (the default) this
 #'   is the data file itself, and the lock file is the same path with `-lck`
@@ -114,8 +117,44 @@ mdbx_env_open <- function(path,
     )
   }
 
-  mdbx_env_open_(path, readonly, subdir, max_dbs, map_size, max_readers,
-                 mode, flags)
+  mdbx_env_open_(path, env_key(path, subdir), readonly, subdir, max_dbs,
+                 map_size, max_readers, mode, flags)
+}
+
+# How an environment is identified in the registry of the ones this process has
+# open, so that two spellings of one environment collide there instead of
+# reaching libmdbx and failing on its lock file.
+#
+# normalizePath() resolves `.`, `..` and symlinks and picks the platform's own
+# spelling, but only for a path that exists -- and `create = TRUE` is routinely
+# given one that does not. The directory always exists by the time an open can
+# succeed, so it is the directory that is resolved and the basename that is
+# carried over untouched. A path whose own directory is missing is left as it
+# was written; no environment can live there, and libmdbx refuses it first.
+#
+# A directory-layout environment keeps its data in `mdbx.dat`, so that is the
+# name both of its spellings share: the directory as `subdir = TRUE` takes it,
+# and the data file itself as a path. env_exists() reads the layout off the
+# filesystem the same way, because `subdir` says what to create while the
+# directory may already be there -- so it decides only when nothing is there
+# yet. Letting it decide regardless would key `subdir = TRUE` aimed at an
+# existing single-file environment as a directory that cannot exist, and the
+# second open of that environment would miss the registry and reach libmdbx.
+#
+# The key is compared, never shown -- the refusal prints the paths the caller
+# and the incumbent wrote -- so it need only be equal for equal environments.
+# A path directly under the root directory picks up a doubled slash from
+# file.path("/", "x"); every spelling of it picks up the same one.
+env_key <- function(path, subdir) {
+  key <- file.path(
+    normalizePath(dirname(path), winslash = "/", mustWork = FALSE),
+    basename(path)
+  )
+  if (dir.exists(key) || (subdir && !file.exists(key))) {
+    file.path(key, "mdbx.dat")
+  } else {
+    key
+  }
 }
 
 #' Close an MDBX environment

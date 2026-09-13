@@ -60,6 +60,12 @@ mdbx_with_read(env, function(txn) {
     metadata = mdbx_get(txn, "abc", db = mdbx_dbi_open(txn, "metadata")))
 })
 
+# Opening one that was never created is an error, so a reader that does not
+# know which exist yet asks rather than catching.
+mdbx_with_read(env, function(txn) {
+  c("files" \%in\% mdbx_dbi_list(txn), "sizes" \%in\% mdbx_dbi_list(txn))
+})
+
 mdbx_env_close(env)
 unlink(c(path, paste0(path, "-lck")))
 }

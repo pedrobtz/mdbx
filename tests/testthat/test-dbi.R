@@ -200,13 +200,22 @@ test_that("creating a database in a read transaction names the conflict", {
     error = identity
   ))
 
-  expect_match(message, "cannot create a named database in a read-only transaction",
-               fixed = TRUE)
-  expect_match(message, "write = TRUE", fixed = TRUE)
+  expect_match(message, "create = TRUE needs a write transaction", fixed = TRUE)
+  expect_match(message, "read-only", fixed = TRUE)
   expect_false(grepl("mdbx error", message, fixed = TRUE))
 
   # Refused before libmdbx, so nothing was created on the way out.
   expect_identical(mdbx_with_read(env, function(txn) mdbx_dbi_list(txn)), character(0))
+
+  # libmdbx refuses on the flag before it looks the database up, so an existing
+  # database is refused too. The message must not claim creation was the point.
+  mdbx_with_write(env, function(txn) mdbx_dbi_open(txn, "already", create = TRUE))
+  existing <- conditionMessage(tryCatch(
+    mdbx_with_read(env, function(txn) mdbx_dbi_open(txn, "already", create = TRUE)),
+    error = identity
+  ))
+  expect_match(existing, "create = TRUE needs a write transaction", fixed = TRUE)
+  expect_match(existing, "create = FALSE", fixed = TRUE)
 
   mdbx_env_close(env)
 })

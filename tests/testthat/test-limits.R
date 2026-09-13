@@ -108,7 +108,7 @@ test_that("numeric arguments that would overflow a native cast are refused", {
 
   # The internal entry points guard independently: they are reachable via :::,
   # and an out-of-range cast is undefined behaviour wherever it happens.
-  expect_error(mdbx:::mdbx_env_open_(path, FALSE, FALSE, 1e20, 0, 0, 420L,
+  expect_error(mdbx:::mdbx_env_open_(path, path, FALSE, FALSE, 1e20, 0, 0, 420L,
                                      character(0)), "too large")
   mdbx_with_read(env, function(txn) {
     expect_error(mdbx:::mdbx_scan_(txn, 1e20, FALSE, character(0), NULL, FALSE), "too large")
