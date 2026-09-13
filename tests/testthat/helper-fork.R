@@ -32,3 +32,17 @@ can_fork <- local({
 skip_if_cannot_fork <- function() {
   skip_if_not(can_fork(), "this R session cannot fork()")
 }
+
+# Run `f` in a forked child and bring back its value, or its error message.
+in_fork <- function(f) {
+  job <- parallel::mcparallel(
+    tryCatch(f(), error = function(e) paste("ERROR:", conditionMessage(e)))
+  )
+  parallel::mccollect(job)[[1]]
+}
+
+local_seeded_env <- function() {
+  env <- mdbx_env_open(tempfile(fileext = ".mdbx"), map_size = test_map_size)
+  mdbx_with_write(env, function(txn) mdbx_put(txn, "k", "v"))
+  env
+}

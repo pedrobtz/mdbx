@@ -1,13 +1,5 @@
 # Concurrency between processes: many readers, one writer.
 
-seeded_db <- function(key = "k", value = "v1") {
-  path <- tempfile(fileext = ".mdbx")
-  env <- mdbx_env_open(path, map_size = test_map_size)
-  mdbx_with_write(env, function(txn) mdbx_put(txn, key, value))
-  mdbx_env_close(env)
-  path
-}
-
 test_that("another process sees committed data but not uncommitted", {
   skip_if_no_subprocess()
 

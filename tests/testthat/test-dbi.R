@@ -1,9 +1,5 @@
 # Named databases: independent key spaces inside one environment.
 
-multi_env <- function(max_dbs = 16) {
-  mdbx_env_open(env_path(), max_dbs = max_dbs, map_size = 16 * 1024^2)
-}
-
 test_that("named databases are independent key spaces", {
   env <- multi_env()
 

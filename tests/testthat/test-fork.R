@@ -7,20 +7,6 @@
 # call has already dereferenced the dead mapping. These assert on the guard
 # above libmdbx that makes the misuse an ordinary R error instead.
 
-# Run `f` in a forked child and bring back its value, or its error message.
-in_fork <- function(f) {
-  job <- parallel::mcparallel(
-    tryCatch(f(), error = function(e) paste("ERROR:", conditionMessage(e)))
-  )
-  parallel::mccollect(job)[[1]]
-}
-
-local_seeded_env <- function() {
-  env <- mdbx_env_open(tempfile(fileext = ".mdbx"), map_size = test_map_size)
-  mdbx_with_write(env, function(txn) mdbx_put(txn, "k", "v"))
-  env
-}
-
 test_that("an inherited environment is refused rather than used", {
   skip_if_cannot_fork()
 

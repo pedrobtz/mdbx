@@ -69,6 +69,39 @@ jobs:
             error_on = "warning"
           )
 
+  # testthat loads helper-*.R before any test file, but a helper defined at the
+  # top of an ordinary test file only exists once that file has been sourced --
+  # which under shuffle = TRUE may be after a test that calls it. Every shared
+  # fixture lives in a helper file for that reason, and this is what keeps it
+  # true: a run in file order would never notice one moving back.
+  shuffled-tests:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: any::testthat, any::devtools
+          needs: check
+
+      - name: Run the test suite in shuffled order
+        shell: Rscript {0}
+        run: |
+          # Several seeds: one shuffle only samples one order, and an order
+          # dependence between two particular files can survive it.
+          for (seed in c(1, 20260913, 99)) {
+            set.seed(seed)
+            message("--- shuffled run, seed ", seed, " ---")
+            devtools::test(shuffle = TRUE, stop_on_failure = TRUE)
+          }
+
   valgrind:
     uses: pedrobtz/r-actions/.github/workflows/valgrind.yml@v1
 
