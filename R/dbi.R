@@ -85,6 +85,14 @@ mdbx_dbi_open <- function(txn, name, create = FALSE) {
 #' removes the database itself, after which the handle refers to nothing and
 #' reopening it needs `create = TRUE` again.
 #'
+#' Emptying a database that holds records also resets its
+#' [sequence counter][mdbx_dbi_sequence] to zero, because 'libmdbx' rewrites
+#' the database's record and the counter lives in it. (Emptying one that is
+#' already empty rewrites nothing and leaves the counter alone, but that is not
+#' a distinction to build on.) Do not rely on ids minted before an emptying
+#' staying unique afterwards — if they are still referenced somewhere, remove
+#' the records by deleting their keys instead.
+#'
 #' Like every other write, this takes effect only when the transaction commits.
 #'
 #' @param txn An `mdbx_txn` object from [mdbx_txn_begin()], opened for writing.
@@ -215,6 +223,8 @@ db_name <- function(db, txn) {
 #' numeric order.
 #'
 #' Like every other write, an increment only stands if the transaction commits.
+#' Emptying or deleting the database can reset the counter to zero — see
+#' [mdbx_dbi_drop()].
 #'
 #' @param txn An `mdbx_txn` object from [mdbx_txn_begin()]. Incrementing needs a
 #'   write transaction and is refused in a read one; reading the counter —

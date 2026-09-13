@@ -251,6 +251,31 @@ test_that("a panic with a live transaction can still be cleaned up", {
   expect_identical(mdbx_version()$major, 0L)
 })
 
+test_that("both poison paths leave the same state after cleanup", {
+  # Found by the fault plans in test-state-machine-faults.R. An environment
+  # panic leaves the transaction's own flag clear and poisons only the owner,
+  # which cleanup then detaches; a transaction-level panic sets the flag on the
+  # transaction itself, where nothing clears it. Reading the flag before the
+  # lifecycle state made the first case report "aborted" and the second
+  # "poisoned" after the identical cleanup.
+  for (panic in list(
+    function(env, txn) mdbx:::mdbx_test_panic_stat_(env, FALSE),
+    function(env, txn) mdbx:::mdbx_test_panic_get_(txn)
+  )) {
+    env <- local_env()
+    txn <- mdbx_txn_begin(env, write = TRUE)
+
+    expect_error(panic(env, txn), "libmdbx assertion failed")
+    expect_identical(mdbx_txn_state(txn), "poisoned")
+
+    expect_silent(mdbx_txn_abort(txn))
+    expect_identical(mdbx_txn_state(txn), "aborted")
+    expect_silent(mdbx_env_close(env))
+  }
+
+  expect_identical(mdbx_version()$major, 0L)
+})
+
 test_that("closing a poisoned environment detaches its transactions", {
   env <- local_env()
   txn <- mdbx_txn_begin(env)

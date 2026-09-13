@@ -33,6 +33,8 @@ the result big-endian if it is going to be a key, so that byte order matches
 numeric order.
 
 Like every other write, an increment only stands if the transaction commits.
+Emptying or deleting the database can reset the counter to zero — see
+\code{\link[=mdbx_dbi_drop]{mdbx_dbi_drop()}}.
 }
 \examples{
 path <- tempfile(fileext = ".mdbx")

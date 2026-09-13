@@ -541,6 +541,36 @@ test_that("a database carries a sequence counter", {
   mdbx_env_close(env)
 })
 
+test_that("emptying a database resets its sequence counter", {
+  # Found by the generated sequences in test-state-machine.R: the model had
+  # assumed an empty-drop kept the counter, because "removes every record but
+  # keeps the database" reads that way. libmdbx rewrites the database record,
+  # and the counter is part of it.
+  env <- multi_env()
+
+  mdbx_with_write(env, function(txn) {
+    db <- mdbx_dbi_open(txn, "ids", create = TRUE)
+    expect_identical(mdbx_dbi_sequence(txn, db, 6), 0)
+
+    # Nothing to remove, so nothing is rewritten and the counter survives.
+    mdbx_dbi_drop(txn, db, delete = FALSE)
+    expect_identical(mdbx_dbi_sequence(txn, db), 6)
+
+    # With records to remove, the database's own entry is rewritten and the
+    # counter goes with it.
+    mdbx_put(txn, "k", "v", db = db)
+    mdbx_dbi_drop(txn, db, delete = FALSE)
+    expect_identical(mdbx_dbi_sequence(txn, db), 0)
+  })
+
+  # And it stays reset once committed, so ids are handed out again.
+  mdbx_with_read(env, function(txn) {
+    expect_identical(mdbx_dbi_sequence(txn, mdbx_dbi_open(txn, "ids")), 0)
+  })
+
+  mdbx_env_close(env)
+})
+
 test_that("an increment rolls back with its transaction", {
   env <- multi_env()
   mdbx_with_write(env, function(txn) mdbx_dbi_open(txn, "seq", create = TRUE))

@@ -1254,8 +1254,15 @@ std::string mdbx_txn_state_(cpp11::sexp txn) {
 
   // Poisoned by a libmdbx assertion failure, in this transaction or in the
   // environment that owns it -- either way nothing may touch it again.
-  if (handle->poisoned ||
-      (handle->owner != nullptr && handle->owner->poisoned))
+  //
+  // Only while it is still live, though. Once it has been ended the terminal
+  // state is the more useful answer, and it must not depend on which of the
+  // two poison paths got there: an environment panic leaves the transaction's
+  // own flag clear, so clearing `owner` during cleanup made that case read
+  // "aborted" while a transaction-level panic still read "poisoned".
+  if (handle->state == mdbx_r::txn_state::active &&
+      (handle->poisoned ||
+       (handle->owner != nullptr && handle->owner->poisoned)))
     return "poisoned";
 
   switch (handle->state) {
