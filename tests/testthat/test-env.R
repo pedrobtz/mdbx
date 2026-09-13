@@ -61,6 +61,48 @@ test_that("an environment can be reopened at the same path", {
   expect_identical(basename(mdbx:::mdbx_env_path_(second)), basename(path))
 })
 
+test_that("a second open on the same path in one process is refused by name", {
+  path <- env_path()
+
+  env <- mdbx_env_open(path, map_size = test_map_size)
+
+  # libmdbx forbids this, and reports it as whatever its lock file failed with
+  # -- EAGAIN on macOS. The refusal has to name the conflict instead, whatever
+  # the second call's other arguments say.
+  expect_error(mdbx_env_open(path, map_size = test_map_size),
+               "already open in this process")
+  expect_error(mdbx_env_open(path, readonly = TRUE, map_size = test_map_size),
+               "already open in this process")
+  expect_error(mdbx_env_open(path, flags = "ACCEDE", map_size = test_map_size),
+               "already open in this process")
+
+  # The first handle is untouched by the refusals.
+  expect_true(mdbx_env_is_open(env))
+  mdbx_with_write(env, function(txn) mdbx_put(txn, "k", "v"))
+
+  # And the path is free again the moment it closes.
+  mdbx_env_close(env)
+  reopened <- mdbx_env_open(path, map_size = test_map_size)
+  expect_identical(mdbx_with_read(reopened, function(txn) mdbx_get(txn, "k")), "v")
+  mdbx_env_close(reopened)
+})
+
+test_that("an environment collected without an explicit close frees its path", {
+  path <- env_path()
+
+  # The registry entry is dropped by whichever of close and finalization
+  # happens first, so a handle abandoned to the GC must not hold the path.
+  local({
+    abandoned <- mdbx_env_open(path, map_size = test_map_size)
+    invisible(NULL)
+  })
+  gc()
+
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  on.exit(mdbx_env_close(env), add = TRUE)
+  expect_true(mdbx_env_is_open(env))
+})
+
 test_that("an existing environment can be opened read-only", {
   path <- env_path()
 

@@ -62,6 +62,11 @@ struct env_handle {
   // libmdbx state, the reader slot and the lock file all belong to the parent.
   long pid;
 
+  // The path this environment was opened at, as R spelled it. Read by the
+  // open registry in r_mdbx.cpp, which uses it to refuse -- and name -- a
+  // second open of the same environment in this process.
+  std::string path;
+
   std::vector<txn_handle *> live_txns;
 };
 

@@ -70,6 +70,43 @@ namespace {
 int live_env_handles = 0;
 int live_txn_handles = 0;
 
+// Every environment this process currently has open.
+//
+// libmdbx documents opening an environment more than once from a single
+// process as an error, and reports it as whatever the lock file's own failure
+// happened to be -- EAGAIN on macOS, and not necessarily that on another
+// platform. Neither the code nor the message says what went wrong, so the
+// conflict is detected here instead and named before libmdbx is reached.
+//
+// Entries are added once an open has succeeded and removed as soon as the
+// handle's environment is closed, by either the explicit close or the
+// finalizer, so a path reappears the moment reopening it would work.
+std::vector<env_handle *> open_envs;
+
+void register_env(env_handle *handle) { open_envs.push_back(handle); }
+
+void unregister_env(env_handle *handle) {
+  open_envs.erase(std::remove(open_envs.begin(), open_envs.end(), handle),
+                  open_envs.end());
+}
+
+// The open handle for `path`, or null.
+//
+// Entries inherited across a fork() are skipped: the vector is copied into the
+// child along with everything else, but the environments it names belong to
+// the parent, and the child is entitled to open them itself.
+//
+// Paths are compared as R spelled them, so two spellings of one file -- a
+// symlink, or a relative path alongside an absolute one -- are not recognised
+// as the same environment. libmdbx still refuses that, just in its own words.
+env_handle *find_open_env(const std::string &path) {
+  for (env_handle *handle : open_envs) {
+    if (handle->path == path && handle->pid == current_pid())
+      return handle;
+  }
+  return nullptr;
+}
+
 [[noreturn]] void stop_after_panic(const mdbx_r_panic_info &panic) {
   cpp11::stop("libmdbx assertion failed: %s (%s:%u)", panic.message,
               panic.function, panic.line);
@@ -514,6 +551,10 @@ void close_handle(env_handle *handle, bool propagate) {
   if (handle->env == nullptr)
     return;
 
+  // Every path below detaches the environment from the handle, so the path it
+  // occupied is free from here on however this call ends.
+  unregister_env(handle);
+
   // Inherited across a fork(). Closing would release the parent's reader slot
   // and lock, from a process that never held them. Drop our copy of the pointer
   // and leave the environment to the process that owns it.
@@ -803,6 +844,13 @@ cpp11::sexp mdbx_env_open_(std::string path, bool readonly, bool subdir,
   if (!(max_readers <= mdbx_r::max_exact_integer))
     cpp11::stop("max_readers is too large: at most 2^53");
 
+  // libmdbx would report the lock file's own failure -- EAGAIN, MDBX_BUSY or
+  // whatever the platform raises -- none of which says what happened. Name it.
+  if (mdbx_r::find_open_env(path) != nullptr)
+    cpp11::stop("mdbx environment '%s' is already open in this process; use "
+                "the existing handle, or close it before opening it again",
+                path.c_str());
+
   // The handle is allocated before the external pointer so that a failure to
   // open leaves nothing for R to reclaim; on success it is handed straight to
   // an external pointer with a finalizer.
@@ -844,7 +892,15 @@ cpp11::sexp mdbx_env_open_(std::string path, bool readonly, bool subdir,
   // directory, and print.mdbx_env() said "single file" for it.
   const bool actual_subdir = (context.actual_flags & MDBX_NOSUBDIR) == 0;
 
-  return mdbx_r::new_env_sexp(handle.release(), path, readonly, actual_subdir);
+  handle->path = path;
+
+  // Registered only once the external pointer exists, so that a failure to
+  // build it cannot leave the registry holding an address nothing will free.
+  mdbx_r::env_handle *raw = handle.release();
+  cpp11::sexp env = mdbx_r::new_env_sexp(raw, path, readonly, actual_subdir);
+  mdbx_r::register_env(raw);
+
+  return env;
 }
 
 // Idempotent: closing an already-closed environment is a no-op, so that

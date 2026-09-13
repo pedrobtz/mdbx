@@ -16,6 +16,14 @@
 #' object is garbage collected, whichever happens first. Relying on garbage
 #' collection is safe but not timely; close explicitly when the moment matters.
 #'
+#' One handle per environment per process. 'libmdbx' documents opening an
+#' environment more than once from a single process as an error, so a second
+#' call on a path this process already has open is refused whatever its other
+#' arguments say — keep the handle you were given and share it, or close it
+#' first. Other processes are unaffected: opening the same environment
+#' concurrently from several of them is the normal case, and the one
+#' [mdbx-concurrency] is about.
+#'
 #' @param path Path to the environment. With `subdir = FALSE` (the default) this
 #'   is the data file itself, and the lock file is the same path with `-lck`
 #'   appended. With `subdir = TRUE` it is a directory, which libmdbx populates
