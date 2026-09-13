@@ -164,22 +164,43 @@ print.mdbx_dbi <- function(x, ...) {
 # database, or the name. Handles carry the environment they were opened against
 # so that using one elsewhere is caught rather than silently addressing a
 # same-named database in another environment.
+#
+# The contents are checked, not just the class. An mdbx_dbi is an ordinary
+# mutable list, so `db$name <- character(0)` is something R code can do -- and
+# character(0) is exactly how the native layer spells "the main database". A
+# damaged named handle therefore used to redirect the operation rather than be
+# refused, silently, for reads and writes and drops alike. NULL stays the only
+# way to ask for the main database.
 db_name <- function(db, txn) {
   if (is.null(db)) {
     return(character(0))
   }
-  if (!inherits(db, "mdbx_dbi")) {
+  if (!inherits(db, "mdbx_dbi") || !is.list(db)) {
     stop("`db` must be an 'mdbx_dbi' object from mdbx_dbi_open(), or NULL for the main database",
          call. = FALSE)
   }
-  if (!identical(db$path, attr(txn, "path"))) {
-    stop(sprintf(
-      "this database handle belongs to the environment at '%s', not '%s'",
-      db$path, attr(txn, "path")
+
+  name <- db$name
+  path <- db$path
+
+  if (!is_single_string(name) || !is_single_string(path)) {
+    stop(paste0(
+      "`db` is not a valid 'mdbx_dbi' object: its `name` and `path` must each ",
+      "be a single non-empty string. Use mdbx_dbi_open() to obtain one, or ",
+      "NULL for the main database"
     ), call. = FALSE)
   }
-  db$name
+
+  if (!identical(path, attr(txn, "path"))) {
+    stop(sprintf(
+      "this database handle belongs to the environment at '%s', not '%s'",
+      path, attr(txn, "path")
+    ), call. = FALSE)
+  }
+
+  name
 }
+
 
 #' A database's sequence counter
 #'

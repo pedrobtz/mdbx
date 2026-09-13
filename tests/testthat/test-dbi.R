@@ -366,6 +366,79 @@ test_that("the db argument is validated", {
   mdbx_env_close(env)
 })
 
+test_that("a damaged db handle is refused, not redirected", {
+  env <- multi_env()
+
+  mdbx_with_write(env, function(txn) {
+    mdbx_put(txn, "k", "main")
+    db <- mdbx_dbi_open(txn, "named", create = TRUE)
+    mdbx_put(txn, "k", "named", db = db)
+  })
+
+  # An mdbx_dbi is an ordinary mutable list, and character(0) is how the native
+  # layer spells "the main database". A handle whose name became character(0)
+  # therefore used to answer from the main database rather than be refused --
+  # silently changing which database the call addressed.
+  broken_names <- list(character(0), "", NA_character_, c("a", "b"), NULL, 42)
+  broken_paths <- list(character(0), "", NA_character_, c("a", "b"), NULL, 42)
+
+  mdbx_with_read(env, function(txn) {
+    good <- mdbx_dbi_open(txn, "named")
+
+    for (value in broken_names) {
+      db <- good
+      db$name <- value
+      expect_error(mdbx_get(txn, "k", db = db), "not a valid 'mdbx_dbi'")
+      expect_error(mdbx_keys(txn, db = db), "not a valid 'mdbx_dbi'")
+      expect_error(mdbx_env_stat(txn, db = db), "not a valid 'mdbx_dbi'")
+    }
+
+    for (value in broken_paths) {
+      db <- good
+      db$path <- value
+      expect_error(mdbx_get(txn, "k", db = db), "not a valid 'mdbx_dbi'")
+    }
+
+    # Fabricated rather than damaged, and the atomic case that cannot even be
+    # indexed with `$`.
+    expect_error(mdbx_get(txn, "k", db = structure(list(), class = "mdbx_dbi")),
+                 "not a valid 'mdbx_dbi'")
+    expect_error(mdbx_get(txn, "k", db = structure("x", class = "mdbx_dbi")),
+                 "must be an 'mdbx_dbi' object")
+
+    # The refusal is an R-level input error: it touches nothing, so the
+    # transaction is still usable and both databases still read as they were.
+    expect_identical(mdbx_get(txn, "k"), "main")
+    expect_identical(mdbx_get(txn, "k", db = good), "named")
+  })
+
+  # The mutations take the same path, and must not reach the main database
+  # either. Each runs in its own transaction so a refusal cannot be mistaken
+  # for the surrounding block rolling back.
+  for (op in list(
+    function(txn, db) mdbx_put(txn, "k", "clobbered", db = db),
+    function(txn, db) mdbx_del(txn, "k", db = db),
+    function(txn, db) mdbx_dbi_drop(txn, db),
+    function(txn, db) mdbx_dbi_drop(txn, db, delete = TRUE),
+    function(txn, db) mdbx_dbi_sequence(txn, db, 1)
+  )) {
+    mdbx_with_write(env, function(txn) {
+      db <- mdbx_dbi_open(txn, "named")
+      db$name <- character(0)
+      expect_error(op(txn, db), "not a valid 'mdbx_dbi'")
+    })
+  }
+
+  # Nothing was written, deleted or dropped on the way through any of them.
+  mdbx_with_read(env, function(txn) {
+    expect_identical(mdbx_get(txn, "k"), "main")
+    expect_identical(mdbx_get(txn, "k", db = mdbx_dbi_open(txn, "named")), "named")
+    expect_identical(mdbx_dbi_list(txn), "named")
+  })
+
+  mdbx_env_close(env)
+})
+
 test_that("the handle prints as itself", {
   env <- multi_env()
   db <- mdbx_with_write(env, function(txn) mdbx_dbi_open(txn, "printed", create = TRUE))
@@ -376,7 +449,10 @@ test_that("the handle prints as itself", {
   mdbx_env_close(env)
 })
 
-test_that("the named databases can be listed", {
+test_that("a listing names every database and decodes the names", {
+  # What a listing *shows*, and how. When it shows it -- creation and deletion
+  # before a commit, and what an abort puts back -- belongs to "a listing shows
+  # what this transaction did", which covers it in full.
   env <- multi_env()
 
   mdbx_with_read(env, function(txn) expect_identical(mdbx_dbi_list(txn), character(0)))
@@ -394,14 +470,6 @@ test_that("the named databases can be listed", {
     expect_length(mdbx_dbi_list(txn, as = "raw"), 2L)
     expect_true(is.raw(mdbx_dbi_list(txn, as = "raw")[[1]]))
   })
-
-  # A database created by a transaction that aborts is never listed.
-  txn <- mdbx_txn_begin(env, write = TRUE)
-  mdbx_dbi_open(txn, "ghost", create = TRUE)
-  expect_true("ghost" %in% mdbx_dbi_list(txn))
-  mdbx_txn_abort(txn)
-
-  mdbx_with_read(env, function(txn) expect_false("ghost" %in% mdbx_dbi_list(txn)))
 
   mdbx_env_close(env)
 })

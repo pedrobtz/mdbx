@@ -1,3 +1,43 @@
+# Native handle safety: authentication, lifecycle, and what survives a panic.
+#
+# The entry points that dereference a native handle go through one
+# authenticator each -- env_from_sexp() and txn_from_sexp() -- so most of them
+# share the tests below rather than needing one apiece. What does need its own
+# row is any entry point that deliberately bypasses the authenticator to stay
+# state-tolerant or idempotent: mdbx_env_close(), mdbx_env_is_open(),
+# mdbx_txn_abort() and mdbx_txn_state(). Those four are why this file exists;
+# three of them once read a handle before checking that it was theirs.
+#
+# The states worth crossing, and where each is covered:
+#
+#   External pointer  genuine ............. every test here
+#                     wrong tag ........... "identified by its tag"
+#                     unrelated pointer ... "identified by its tag" (stranger)
+#                     cleared pointer ..... not reachable from R: the address is
+#                                           cleared only by the finalizer, which
+#                                           runs on an object already
+#                                           unreachable. A foreign pointer is
+#                                           null too, and the tag refuses it
+#                                           first.
+#   Transaction       active/committed/aborted ... test-txn.R
+#                     failed .............. test-txn.R, after MDBX_MAP_FULL
+#                     poisoned ............ "panic in a transaction operation"
+#   Owner             open ................ every test here
+#                     closed/detached ..... "a transaction outliving its
+#                                           environment", and test-txn.R's
+#                                           simultaneous finalization
+#                     poisoned ............ "panic with a live transaction"
+#   Process           creator ............. every test here
+#                     forked child ........ test-fork.R
+#   Cleanup order     transaction first ... "panic with a live transaction"
+#                     environment first ... "closing a poisoned environment"
+#                     GC first ............ "leaves no transaction registered",
+#                                           and test-txn.R
+#
+# Adding an entry point that touches a handle means placing it in that grid:
+# either it uses the central authenticator and is covered, or it does not and
+# needs a row.
+
 test_that("package initialization silences the libmdbx after-fork notice", {
   skip_if_cannot_fork()
 
@@ -129,6 +169,38 @@ test_that("a handle is identified by its tag, not by its class attribute", {
   mdbx_txn_commit(committed)
   expect_identical(mdbx_txn_state(committed), "committed")
   expect_silent(mdbx_txn_abort(committed))
+})
+
+test_that("a transaction outliving its environment reports what happened", {
+  # The owner-closed row of the grid above. Closing is refused while a
+  # transaction is live, so the only way here is to finish the transaction
+  # first -- and the object then has to keep reporting its own outcome rather
+  # than blaming the environment that has since gone.
+  env <- local_env()
+
+  aborted <- mdbx_txn_begin(env)
+  mdbx_txn_abort(aborted)
+
+  committed <- mdbx_txn_begin(env, write = TRUE)
+  mdbx_txn_commit(committed)
+
+  mdbx_env_close(env)
+
+  expect_identical(mdbx_txn_state(aborted), "aborted")
+  expect_identical(mdbx_txn_state(committed), "committed")
+
+  # The use-after-finish message is the useful one: it names what the caller
+  # did, not the environment's later fate.
+  expect_error(mdbx_get(aborted, "k"), "already aborted")
+  expect_error(mdbx_get(committed, "k"), "already committed")
+
+  expect_silent(mdbx_txn_abort(aborted))
+  expect_error(mdbx_txn_commit(committed), "already committed")
+
+  gc()
+  gc()
+  expect_identical(mdbx_txn_state(aborted), "aborted")
+  expect_identical(mdbx_version()$major, 0L)
 })
 
 test_that("a panic in a transaction operation poisons the environment too", {
