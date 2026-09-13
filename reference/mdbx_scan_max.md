@@ -16,6 +16,15 @@ mdbx_scan_max
 
 A single number.
 
+## Value
+
+A length-one numeric vector, `1e6`. It is a constant rather than a
+function: its value is the number of records above which
+[`mdbx_keys()`](https://pedrobtz.github.io/mdbx/reference/mdbx_keys.md)
+and
+[`mdbx_items()`](https://pedrobtz.github.io/mdbx/reference/mdbx_items.md)
+refuse a scan that was given no `limit`.
+
 ## Details
 
 The guard applies only when `limit` is `NULL`. Any explicit `limit` is

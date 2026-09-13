@@ -13,8 +13,18 @@ transaction:
 [`mdbx_txn_begin()`](https://pedrobtz.github.io/mdbx/reference/mdbx_txn_begin.md)
 refuses a second rather than deadlocking, and
 [`mdbx_env_close()`](https://pedrobtz.github.io/mdbx/reference/mdbx_env_close.md)
-refuses while one is open. Distinct environments — even two opened on
-the same file in the same session — are independent.
+refuses while one is open.
+
+There is no way around that by opening the environment twice. 'libmdbx'
+documents opening an environment more than once from a single process as
+an error, so
+[`mdbx_env_open()`](https://pedrobtz.github.io/mdbx/reference/mdbx_env_open.md)
+refuses a path this process already has open, naming the conflict
+instead of reporting the lock failure 'libmdbx' would. Pass the handle
+you have, or close it first. A process that needs independent key spaces
+wants named databases
+([`mdbx_dbi_open()`](https://pedrobtz.github.io/mdbx/reference/mdbx_dbi_open.md))
+rather than a second environment.
 
 Using a transaction from another thread is rejected by 'libmdbx' itself,
 with `MDBX_THREAD_MISMATCH`, because the package is compiled with
@@ -77,4 +87,5 @@ rather than failing on the difference. See
 
 [`mdbx_txn_begin()`](https://pedrobtz.github.io/mdbx/reference/mdbx_txn_begin.md),
 [`mdbx_env_open()`](https://pedrobtz.github.io/mdbx/reference/mdbx_env_open.md),
+[`mdbx_dbi_open()`](https://pedrobtz.github.io/mdbx/reference/mdbx_dbi_open.md),
 [`mdbx_flags()`](https://pedrobtz.github.io/mdbx/reference/mdbx_flags.md)

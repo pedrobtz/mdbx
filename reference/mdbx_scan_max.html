@@ -64,6 +64,12 @@ meant to be read in one go.</p>
     <p>A single number.</p>
     </div>
     <div class="section level2">
+    <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
+    <p>A length-one numeric vector, <code>1e6</code>. It is a constant rather than a
+function: its value is the number of records above which <code><a href="mdbx_keys.html">mdbx_keys()</a></code> and
+<code><a href="mdbx_items.html">mdbx_items()</a></code> refuse a scan that was given no <code>limit</code>.</p>
+    </div>
+    <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
     <p>The guard applies only when <code>limit</code> is <code>NULL</code>. Any explicit <code>limit</code> is
 honoured, including <code>limit = Inf</code> to say "all of them, really".</p>

@@ -116,6 +116,19 @@ is called on it, or when the object is garbage collected, whichever
 happens first. Relying on garbage collection is safe but not timely;
 close explicitly when the moment matters.
 
+One handle per environment per process. 'libmdbx' documents opening an
+environment more than once from a single process as an error, so a
+second call on a path this process already has open is refused whatever
+its other arguments say — keep the handle you were given and share it,
+or close it first. The refusal looks past the spelling: a relative path
+and an absolute one, a symlinked directory, and the `mdbx.dat` inside a
+`subdir = TRUE` environment all name the environment they resolve to,
+and the message says which spelling the open handle was created under.
+Other processes are unaffected: opening the same environment
+concurrently from several of them is the normal case, and the one
+[mdbx-concurrency](https://pedrobtz.github.io/mdbx/reference/mdbx-concurrency.md)
+is about.
+
 ## See also
 
 [`mdbx_env_close()`](https://pedrobtz.github.io/mdbx/reference/mdbx_env_close.md),
@@ -130,7 +143,7 @@ path <- tempfile(fileext = ".mdbx")
 
 env <- mdbx_env_open(path)
 env
-#> <mdbx_env> /tmp/RtmpOrf7TD/file1c594e85f781.mdbx 
+#> <mdbx_env> /tmp/Rtmpu4d39X/file1a04339cfdcc.mdbx 
 #>   access: read-write 
 #>   layout: single file 
 #>   status: open 

@@ -146,6 +146,16 @@ Durability section of <code><a href="mdbx_flags.html">mdbx_flags()</a></code> be
     <p>The environment is closed when <code><a href="mdbx_env_close.html">mdbx_env_close()</a></code> is called on it, or when the
 object is garbage collected, whichever happens first. Relying on garbage
 collection is safe but not timely; close explicitly when the moment matters.</p>
+<p>One handle per environment per process. 'libmdbx' documents opening an
+environment more than once from a single process as an error, so a second
+call on a path this process already has open is refused whatever its other
+arguments say — keep the handle you were given and share it, or close it
+first. The refusal looks past the spelling: a relative path and an absolute
+one, a symlinked directory, and the <code>mdbx.dat</code> inside a <code>subdir = TRUE</code>
+environment all name the environment they resolve to, and the message says
+which spelling the open handle was created under. Other processes are
+unaffected: opening the same environment concurrently from several of them
+is the normal case, and the one <a href="mdbx-concurrency.html">mdbx-concurrency</a> is about.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
@@ -159,7 +169,7 @@ collection is safe but not timely; close explicitly when the moment matters.</p>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="va">env</span> <span class="op">&lt;-</span> <span class="fu">mdbx_env_open</span><span class="op">(</span><span class="va">path</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">env</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mdbx_env&gt; /tmp/RtmpOrf7TD/file1c594e85f781.mdbx </span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mdbx_env&gt; /tmp/Rtmpu4d39X/file1a04339cfdcc.mdbx </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   access: read-write </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   layout: single file </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   status: open </span>

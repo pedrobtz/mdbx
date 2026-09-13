@@ -27,8 +27,9 @@ mdbx_dbi_open(txn, name, create = FALSE)
 
 - create:
 
-  If `TRUE`, create the database when it does not exist. If `FALSE`,
-  opening a database that was never created is an error.
+  If `TRUE`, create the database when it does not exist — which needs a
+  write transaction, and is refused in a read one. If `FALSE`, opening a
+  database that was never created is an error naming it.
 
 ## Value
 
@@ -46,8 +47,14 @@ The database is opened for the duration of this transaction and
 re-resolved by name in later ones, so the returned handle stays usable
 for the life of the environment — but only if the transaction that
 created it **commits**. If it aborts, the database was never created and
-the handle refers to nothing; using it then is an ordinary "not found"
-error.
+the handle refers to nothing; passing it as `db` then reports the
+database as missing, naming it.
+
+Opening a database that does not exist is an error rather than `NULL`: a
+name is something you wrote, so a mistyped one is worth reporting where
+it was written. To find out whether one exists without handling an
+error, look for it in
+[`mdbx_dbi_list()`](https://pedrobtz.github.io/mdbx/reference/mdbx_dbi_list.md).
 
 Reserve capacity with `max_dbs` in
 [`mdbx_env_open()`](https://pedrobtz.github.io/mdbx/reference/mdbx_env_open.md)
@@ -56,6 +63,7 @@ databases at all, and running out reports `MDBX_DBS_FULL`.
 
 ## See also
 
+[`mdbx_dbi_list()`](https://pedrobtz.github.io/mdbx/reference/mdbx_dbi_list.md),
 [`mdbx_dbi_drop()`](https://pedrobtz.github.io/mdbx/reference/mdbx_dbi_drop.md),
 [`mdbx_env_open()`](https://pedrobtz.github.io/mdbx/reference/mdbx_env_open.md)
 for `max_dbs`
@@ -81,6 +89,13 @@ mdbx_with_read(env, function(txn) {
 })
 #>               files            metadata 
 #> "/data/abc.parquet"   "{\"size\":1234}" 
+
+# Opening one that was never created is an error, so a reader that does not
+# know which exist yet asks rather than catching.
+mdbx_with_read(env, function(txn) {
+  c("files" %in% mdbx_dbi_list(txn), "sizes" %in% mdbx_dbi_list(txn))
+})
+#> [1]  TRUE FALSE
 
 mdbx_env_close(env)
 unlink(c(path, paste0(path, "-lck")))

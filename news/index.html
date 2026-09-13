@@ -39,7 +39,10 @@
 
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.1.0" id="mdbx-010">mdbx 0.1.0<a class="anchor" aria-label="anchor" href="#mdbx-010"></a></h2>
-<ul><li>Initial version.</li>
+<ul><li><p>Initial version.</p></li>
+<li><p><code><a href="../reference/mdbx_env_open.html">mdbx_env_open()</a></code> refuses a path this process already has open, naming the conflict, rather than passing on the lock file’s own failure (<code>EAGAIN</code> on macOS). Different spellings of one environment – a relative path against an absolute one, a symlinked directory, the data file of a <code>subdir = TRUE</code> layout – are recognised as the same path (<a href="https://github.com/pedrobtz/mdbx/issues/2" class="external-link">#2</a>).</p></li>
+<li><p><code><a href="../reference/mdbx_dbi_open.html">mdbx_dbi_open()</a></code> names the database it could not open, and says why <code>create = TRUE</code> needs a write transaction, instead of reporting libmdbx’s <code>MDBX_NOTFOUND</code> and <code>EACCES</code> (<a href="https://github.com/pedrobtz/mdbx/issues/3" class="external-link">#3</a>).</p></li>
+<li><p><code>?mdbx-concurrency</code> no longer claims that two environments opened on the same file in one session are independent; they never were.</p></li>
 </ul></div>
   </main></div>
 

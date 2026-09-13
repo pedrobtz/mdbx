@@ -60,8 +60,14 @@ within one</strong>.</p>
 <p>'libmdbx' binds a transaction to the thread that began it, and R is
 single-threaded. An environment therefore supports exactly one live
 transaction: <code><a href="mdbx_txn_begin.html">mdbx_txn_begin()</a></code> refuses a second rather than deadlocking, and
-<code><a href="mdbx_env_close.html">mdbx_env_close()</a></code> refuses while one is open. Distinct environments — even
-two opened on the same file in the same session — are independent.</p>
+<code><a href="mdbx_env_close.html">mdbx_env_close()</a></code> refuses while one is open.</p>
+<p>There is no way around that by opening the environment twice. 'libmdbx'
+documents opening an environment more than once from a single process as an
+error, so <code><a href="mdbx_env_open.html">mdbx_env_open()</a></code> refuses a path this process already has open,
+naming the conflict instead of reporting the lock failure 'libmdbx' would.
+Pass the handle you have, or close it first. A process that needs
+independent key spaces wants named databases (<code><a href="mdbx_dbi_open.html">mdbx_dbi_open()</a></code>) rather than
+a second environment.</p>
 <p>Using a transaction from another thread is rejected by 'libmdbx' itself, with
 <code>MDBX_THREAD_MISMATCH</code>, because the package is compiled with
 <code>MDBX_TXN_CHECKOWNER</code>. <code>mdbx_version()$build$options</code> shows that flag, and
@@ -118,7 +124,8 @@ rather than failing on the difference. See <code><a href="mdbx_flags.html">mdbx_
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
-    <div class="dont-index"><p><code><a href="mdbx_txn_begin.html">mdbx_txn_begin()</a></code>, <code><a href="mdbx_env_open.html">mdbx_env_open()</a></code>, <code><a href="mdbx_flags.html">mdbx_flags()</a></code></p></div>
+    <div class="dont-index"><p><code><a href="mdbx_txn_begin.html">mdbx_txn_begin()</a></code>, <code><a href="mdbx_env_open.html">mdbx_env_open()</a></code>, <code><a href="mdbx_dbi_open.html">mdbx_dbi_open()</a></code>,
+<code><a href="mdbx_flags.html">mdbx_flags()</a></code></p></div>
     </div>
 
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

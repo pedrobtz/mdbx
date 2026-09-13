@@ -70,8 +70,9 @@ needs a write transaction; opening an existing one does not.</p></dd>
 
 
 <dt id="arg-create">create<a class="anchor" aria-label="anchor" href="#arg-create"></a></dt>
-<dd><p>If <code>TRUE</code>, create the database when it does not exist. If
-<code>FALSE</code>, opening a database that was never created is an error.</p></dd>
+<dd><p>If <code>TRUE</code>, create the database when it does not exist — which
+needs a write transaction, and is refused in a read one. If <code>FALSE</code>,
+opening a database that was never created is an error naming it.</p></dd>
 
 </dl></div>
     <div class="section level2">
@@ -85,14 +86,19 @@ needs a write transaction; opening an existing one does not.</p></dd>
 by name in later ones, so the returned handle stays usable for the life of
 the environment — but only if the transaction that created it <strong>commits</strong>.
 If it aborts, the database was never created and the handle refers to
-nothing; using it then is an ordinary "not found" error.</p>
+nothing; passing it as <code>db</code> then reports the database as missing, naming it.</p>
+<p>Opening a database that does not exist is an error rather than <code>NULL</code>: a
+name is something you wrote, so a mistyped one is worth reporting where it
+was written. To find out whether one exists without handling an error, look
+for it in <code><a href="mdbx_dbi_list.html">mdbx_dbi_list()</a></code>.</p>
 <p>Reserve capacity with <code>max_dbs</code> in <code><a href="mdbx_env_open.html">mdbx_env_open()</a></code> before opening any: the
 libmdbx default leaves no room for named databases at all, and running out
 reports <code>MDBX_DBS_FULL</code>.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
-    <div class="dont-index"><p><code><a href="mdbx_dbi_drop.html">mdbx_dbi_drop()</a></code>, <code><a href="mdbx_env_open.html">mdbx_env_open()</a></code> for <code>max_dbs</code></p></div>
+    <div class="dont-index"><p><code><a href="mdbx_dbi_list.html">mdbx_dbi_list()</a></code>, <code><a href="mdbx_dbi_drop.html">mdbx_dbi_drop()</a></code>, <code><a href="mdbx_env_open.html">mdbx_env_open()</a></code> for
+<code>max_dbs</code></p></div>
     </div>
 
     <div class="section level2">
@@ -115,6 +121,13 @@ reports <code>MDBX_DBS_FULL</code>.</p>
 <span class="r-in"><span><span class="op">}</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>               files            metadata </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> "/data/abc.parquet"   "{\"size\":1234}" </span>
+<span class="r-in"><span></span></span>
+<span class="r-in"><span><span class="co"># Opening one that was never created is an error, so a reader that does not</span></span></span>
+<span class="r-in"><span><span class="co"># know which exist yet asks rather than catching.</span></span></span>
+<span class="r-in"><span><span class="fu"><a href="mdbx_with_write.html">mdbx_with_read</a></span><span class="op">(</span><span class="va">env</span>, <span class="kw">function</span><span class="op">(</span><span class="va">txn</span><span class="op">)</span> <span class="op">{</span></span></span>
+<span class="r-in"><span>  <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"files"</span> <span class="op"><a href="https://rdrr.io/r/base/match.html" class="external-link">%in%</a></span> <span class="fu"><a href="mdbx_dbi_list.html">mdbx_dbi_list</a></span><span class="op">(</span><span class="va">txn</span><span class="op">)</span>, <span class="st">"sizes"</span> <span class="op"><a href="https://rdrr.io/r/base/match.html" class="external-link">%in%</a></span> <span class="fu"><a href="mdbx_dbi_list.html">mdbx_dbi_list</a></span><span class="op">(</span><span class="va">txn</span><span class="op">)</span><span class="op">)</span></span></span>
+<span class="r-in"><span><span class="op">}</span><span class="op">)</span></span></span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [1]  TRUE FALSE</span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="fu"><a href="mdbx_env_close.html">mdbx_env_close</a></span><span class="op">(</span><span class="va">env</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/unlink.html" class="external-link">unlink</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">path</span>, <span class="fu"><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste0</a></span><span class="op">(</span><span class="va">path</span>, <span class="st">"-lck"</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span></span>
