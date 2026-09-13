@@ -53,10 +53,13 @@ test_that("the same seed generates the same sequence", {
   # Compared with the fixture's directory stripped out. Each run gets its own
   # temporary directory, so the absolute paths differ by construction while the
   # spelling each command chose -- which is the generated decision -- does not.
+  # Either separator: tempfile() returns backslashes on Windows, and only the
+  # components file.path() added below the fixture directory use "/". Matching
+  # "/" alone left the random directory name in the comparison there.
   strip_dir <- function(trace) {
     vapply(trace, function(command) {
       if (!is.null(command$path)) {
-        command$path <- sub(".*/state-[^/]+/", "", command$path)
+        command$path <- sub(".*[\\/]state-[^\\/]+[\\/]", "", command$path)
       }
       format_command(command)
     }, "")
