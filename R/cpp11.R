@@ -156,6 +156,10 @@ mdbx_test_panic_stat_ <- function(env, info) {
   invisible(.Call(`_mdbx_mdbx_test_panic_stat_`, env, info))
 }
 
+mdbx_test_panic_get_ <- function(txn) {
+  invisible(.Call(`_mdbx_mdbx_test_panic_get_`, txn))
+}
+
 mdbx_test_panic_boundary_ <- function() {
   invisible(.Call(`_mdbx_mdbx_test_panic_boundary_`))
 }

@@ -10,12 +10,31 @@ mdbx_txn_state(txn)
 \item{txn}{An \code{mdbx_txn} object, from \code{\link[=mdbx_txn_begin]{mdbx_txn_begin()}}.}
 }
 \value{
-One of \code{"active"}, \code{"committed"}, or \code{"aborted"}. \code{"poisoned"} is
-reported for a transaction abandoned after a 'libmdbx' assertion failure,
-and \code{"invalid"} for one whose handle has already been reclaimed.
+One of:
+\describe{
+\item{\code{"active"}}{Open and usable.}
+\item{\code{"committed"}}{Ended by \code{\link[=mdbx_txn_commit]{mdbx_txn_commit()}}; its writes are durable.}
+\item{\code{"aborted"}}{Ended by \code{\link[=mdbx_txn_abort]{mdbx_txn_abort()}}, by the garbage collector,
+or by its environment closing; its writes are gone.}
+\item{\code{"failed"}}{Still open, but 'libmdbx' has marked it erroneous —
+\code{MDBX_MAP_FULL} is the usual cause. Every operation now fails with
+\code{MDBX_BAD_TXN} and committing reports a rollback, so the only thing
+left to do with it is end it.}
+\item{\code{"poisoned"}}{Abandoned after a 'libmdbx' assertion failure, in
+this transaction or in the environment that owns it. Aborting it is
+still safe, and does not re-enter 'libmdbx'; afterwards it reads as
+\code{"aborted"} like any other ended transaction.}
+\item{\code{"invalid"}}{The handle has been reclaimed, or was inherited across
+a \code{fork()} and belongs to another process — see \link{mdbx-concurrency}.}
+}
 }
 \description{
-State of a transaction
+What this reports is whether the transaction can still be used, not whether
+its native handle happens to be allocated. Three of the five answers exist
+because those differ: a transaction 'libmdbx' has marked erroneous, one
+poisoned by an assertion failure, and one inherited across a \code{fork()} are
+each refused by every operation, and reporting them as \code{"active"} described
+only this package's own bookkeeping.
 }
 \examples{
 path <- tempfile(fileext = ".mdbx")

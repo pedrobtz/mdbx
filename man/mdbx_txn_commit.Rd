@@ -29,7 +29,8 @@ operation failing, and the transaction carries on. A failure that exhausts
 the map (\code{MDBX_MAP_FULL}) instead marks the transaction unusable: every later
 operation fails with \code{MDBX_BAD_TXN}, and the commit reports that the whole
 transaction was rolled back rather than committed. \code{\link[=mdbx_txn_state]{mdbx_txn_state()}} reads
-\code{"aborted"} in that case.
+\code{"failed"} from the moment that happens, and \code{"aborted"} once the rollback
+has ended it.
 }
 \examples{
 path <- tempfile(fileext = ".mdbx")

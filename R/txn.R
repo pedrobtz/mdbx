@@ -89,7 +89,8 @@ mdbx_txn_begin <- function(env, write = FALSE, flags = NULL) {
 #' the map (`MDBX_MAP_FULL`) instead marks the transaction unusable: every later
 #' operation fails with `MDBX_BAD_TXN`, and the commit reports that the whole
 #' transaction was rolled back rather than committed. [mdbx_txn_state()] reads
-#' `"aborted"` in that case.
+#' `"failed"` from the moment that happens, and `"aborted"` once the rollback
+#' has ended it.
 #'
 #' @param txn An `mdbx_txn` object, from [mdbx_txn_begin()].
 #' @return `NULL`, invisibly.
@@ -137,10 +138,31 @@ mdbx_txn_abort <- function(txn) {
 
 #' State of a transaction
 #'
+#' What this reports is whether the transaction can still be used, not whether
+#' its native handle happens to be allocated. Three of the five answers exist
+#' because those differ: a transaction 'libmdbx' has marked erroneous, one
+#' poisoned by an assertion failure, and one inherited across a `fork()` are
+#' each refused by every operation, and reporting them as `"active"` described
+#' only this package's own bookkeeping.
+#'
 #' @param txn An `mdbx_txn` object, from [mdbx_txn_begin()].
-#' @return One of `"active"`, `"committed"`, or `"aborted"`. `"poisoned"` is
-#'   reported for a transaction abandoned after a 'libmdbx' assertion failure,
-#'   and `"invalid"` for one whose handle has already been reclaimed.
+#' @return One of:
+#'   \describe{
+#'     \item{`"active"`}{Open and usable.}
+#'     \item{`"committed"`}{Ended by [mdbx_txn_commit()]; its writes are durable.}
+#'     \item{`"aborted"`}{Ended by [mdbx_txn_abort()], by the garbage collector,
+#'       or by its environment closing; its writes are gone.}
+#'     \item{`"failed"`}{Still open, but 'libmdbx' has marked it erroneous —
+#'       `MDBX_MAP_FULL` is the usual cause. Every operation now fails with
+#'       `MDBX_BAD_TXN` and committing reports a rollback, so the only thing
+#'       left to do with it is end it.}
+#'     \item{`"poisoned"`}{Abandoned after a 'libmdbx' assertion failure, in
+#'       this transaction or in the environment that owns it. Aborting it is
+#'       still safe, and does not re-enter 'libmdbx'; afterwards it reads as
+#'       `"aborted"` like any other ended transaction.}
+#'     \item{`"invalid"`}{The handle has been reclaimed, or was inherited across
+#'       a `fork()` and belongs to another process — see [mdbx-concurrency].}
+#'   }
 #' @seealso [mdbx_txn_begin()]
 #' @export
 #' @examples

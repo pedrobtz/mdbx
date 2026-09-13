@@ -288,6 +288,14 @@ extern "C" SEXP _mdbx_mdbx_test_panic_stat_(SEXP env, SEXP info) {
   END_CPP11
 }
 // r_mdbx.cpp
+void mdbx_test_panic_get_(cpp11::sexp txn);
+extern "C" SEXP _mdbx_mdbx_test_panic_get_(SEXP txn) {
+  BEGIN_CPP11
+    mdbx_test_panic_get_(cpp11::as_cpp<cpp11::decay_t<cpp11::sexp>>(txn));
+    return R_NilValue;
+  END_CPP11
+}
+// r_mdbx.cpp
 void mdbx_test_panic_boundary_();
 extern "C" SEXP _mdbx_mdbx_test_panic_boundary_() {
   BEGIN_CPP11
@@ -325,6 +333,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_mdbx_mdbx_test_check_",           (DL_FUNC) &_mdbx_mdbx_test_check_,           1},
     {"_mdbx_mdbx_test_error_codes_",     (DL_FUNC) &_mdbx_mdbx_test_error_codes_,     0},
     {"_mdbx_mdbx_test_panic_boundary_",  (DL_FUNC) &_mdbx_mdbx_test_panic_boundary_,  0},
+    {"_mdbx_mdbx_test_panic_get_",       (DL_FUNC) &_mdbx_mdbx_test_panic_get_,       1},
     {"_mdbx_mdbx_test_panic_stat_",      (DL_FUNC) &_mdbx_mdbx_test_panic_stat_,      2},
     {"_mdbx_mdbx_test_result_true_",     (DL_FUNC) &_mdbx_mdbx_test_result_true_,     0},
     {"_mdbx_mdbx_test_thread_mismatch_", (DL_FUNC) &_mdbx_mdbx_test_thread_mismatch_, 1},

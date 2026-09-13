@@ -46,6 +46,19 @@ bool is_env_sexp(SEXP x) {
          R_ExternalPtrTag(x) == env_tag();
 }
 
+// The same question for transactions, and for the same reason.
+//
+// The S3 class is not an identity: `class(env) <- "mdbx_txn"` is enough to
+// hand an env_handle to code that will read it as a txn_handle. The two
+// structs are both EXTPTRSXP and neither layout is a prefix of the other, so
+// that is type confusion -- mdbx_txn_state() answered "aborted" for it, having
+// read the environment's pid where a txn_state belongs. Only the tag, which R
+// cannot set, tells them apart.
+bool is_txn_sexp(SEXP x) {
+  return TYPEOF(x) == EXTPTRSXP && Rf_inherits(x, "mdbx_txn") &&
+         R_ExternalPtrTag(x) == txn_tag();
+}
+
 // Bounds for every value that reaches a narrowing cast. R validates these too,
 // but the entry points are reachable through ::: and an out-of-range
 // double-to-integer conversion is undefined behaviour, so the guard belongs
@@ -275,15 +288,25 @@ void finish_call(void *data) {
 // A panic inside a transaction poisons the environment too: libmdbx has
 // detected a violated invariant, and MDBX_PANIC is documented to mean the
 // environment must be shut down. Neither handle is touched again.
+//
+// Every transaction-backed poison callback goes through this. Poisoning only
+// the transaction used to leave the environment believing itself healthy: the
+// transaction's finalizer skips the native abort a poisoned handle must not
+// make, unregisters itself, and the next mdbx_env_close() then hands libmdbx
+// an environment whose transaction it never ended -- the exact UB the live
+// transaction registry exists to make unreachable.
+void poison_txn(txn_handle *handle) {
+  handle->poisoned = true;
+  if (handle->owner != nullptr)
+    handle->owner->poisoned = true;
+}
+
 void poison_begin(void *data) {
   static_cast<begin_context *>(data)->owner->poisoned = true;
 }
 
 void poison_finish(void *data) {
-  txn_handle *handle = static_cast<finish_context *>(data)->handle;
-  handle->poisoned = true;
-  if (handle->owner != nullptr)
-    handle->owner->poisoned = true;
+  poison_txn(static_cast<finish_context *>(data)->handle);
 }
 
 struct dbi_context {
@@ -343,19 +366,19 @@ void del_call(void *data) {
 }
 
 void poison_dbi(void *data) {
-  static_cast<dbi_context *>(data)->handle->poisoned = true;
+  poison_txn(static_cast<dbi_context *>(data)->handle);
 }
 
 void poison_get(void *data) {
-  static_cast<get_context *>(data)->handle->poisoned = true;
+  poison_txn(static_cast<get_context *>(data)->handle);
 }
 
 void poison_put(void *data) {
-  static_cast<put_context *>(data)->handle->poisoned = true;
+  poison_txn(static_cast<put_context *>(data)->handle);
 }
 
 void poison_del(void *data) {
-  static_cast<del_context *>(data)->handle->poisoned = true;
+  poison_txn(static_cast<del_context *>(data)->handle);
 }
 
 // A whole-database scan, done in one crossing of the R/C boundary. Looping in C
@@ -452,10 +475,7 @@ void scan_call(void *data) {
 }
 
 void poison_scan(void *data) {
-  scan_context *context = static_cast<scan_context *>(data);
-  context->handle->poisoned = true;
-  if (context->handle->owner != nullptr)
-    context->handle->owner->poisoned = true;
+  poison_txn(static_cast<scan_context *>(data)->handle);
 }
 
 // Statistics and environment info. Both libmdbx entry points take an optional
@@ -495,7 +515,7 @@ void dbi_stat_call(void *data) {
 }
 
 void poison_dbi_stat(void *data) {
-  static_cast<dbi_stat_context *>(data)->handle->poisoned = true;
+  mdbx_r::poison_txn(static_cast<dbi_stat_context *>(data)->handle);
 }
 
 struct info_context {
@@ -734,8 +754,7 @@ env_handle *env_from_sexp(SEXP x) {
 }
 
 txn_handle *txn_from_sexp(SEXP x) {
-  if (TYPEOF(x) != EXTPTRSXP || !Rf_inherits(x, "mdbx_txn") ||
-      R_ExternalPtrTag(x) != txn_tag())
+  if (!is_txn_sexp(x))
     cpp11::stop("expected an 'mdbx_txn' object");
 
   txn_handle *handle = static_cast<txn_handle *>(R_ExternalPtrAddr(x));
@@ -930,6 +949,14 @@ void mdbx_env_close_(cpp11::sexp env) {
   if (handle == nullptr)
     return;
 
+  // A poisoned environment is never handed back to libmdbx, so its registered
+  // transactions cannot be ended the ordinary way either -- and refusing on
+  // their account would leave no way to release the environment at all.
+  // detach_txns() invalidates them without calling libmdbx, which is what it
+  // already does for this case when the finalizer runs.
+  if (handle->poisoned)
+    mdbx_r::detach_txns(handle);
+
   // Refuse rather than close underneath them. mdbx_env_close_ex() documents
   // that using a transaction afterwards is UB that "would cause a SIGSEGV", and
   // silently aborting the caller's transactions would hide a real bug.
@@ -1076,7 +1103,7 @@ void mdbx_txn_commit_(cpp11::sexp txn) { finish_txn(txn, true); }
 // commit -- which is exactly how mdbx_with_write() uses it.
 [[cpp11::register]]
 void mdbx_txn_abort_(cpp11::sexp txn) {
-  if (TYPEOF(txn) != EXTPTRSXP || !Rf_inherits(txn, "mdbx_txn"))
+  if (!mdbx_r::is_txn_sexp(txn))
     cpp11::stop("expected an 'mdbx_txn' object");
 
   mdbx_r::txn_handle *handle =
@@ -1085,24 +1112,66 @@ void mdbx_txn_abort_(cpp11::sexp txn) {
   if (handle == nullptr || handle->txn == nullptr)
     return;
 
+  // A poisoned ownership graph is ended here rather than in libmdbx, which
+  // must not be re-entered once it has rejected its own invariants.
+  //
+  // Refusing instead is what made a panic unrecoverable: the transaction could
+  // not be aborted because its environment was poisoned, and the environment
+  // could not be closed because the transaction was still registered, so
+  // nothing short of dropping both references and forcing a GC released the
+  // handle. Worse, abort is how mdbx_with_read() and mdbx_with_write() clean
+  // up on the way out, so the refusal was raised from on.exit() and replaced
+  // the panic that caused it -- destroying the only message that said what
+  // libmdbx had actually found.
+  //
+  // A handle from another process is not covered: it belongs to the parent,
+  // and finish_txn() refuses it by name.
+  if (handle->pid == mdbx_r::current_pid() &&
+      (handle->poisoned || handle->owner == nullptr ||
+       handle->owner->env == nullptr || handle->owner->poisoned)) {
+    mdbx_r::mark_finished(handle, mdbx_r::txn_state::aborted);
+    R_SetExternalPtrProtected(txn, R_NilValue);
+    return;
+  }
+
   finish_txn(txn, false);
 }
 
 [[cpp11::register]]
 std::string mdbx_txn_state_(cpp11::sexp txn) {
-  if (TYPEOF(txn) != EXTPTRSXP || !Rf_inherits(txn, "mdbx_txn"))
+  if (!mdbx_r::is_txn_sexp(txn))
     cpp11::stop("expected an 'mdbx_txn' object");
 
   mdbx_r::txn_handle *handle =
       static_cast<mdbx_r::txn_handle *>(R_ExternalPtrAddr(txn));
 
+  // What this reports is whether the transaction can still be used, not
+  // whether its native handle happens to be allocated. The three answers below
+  // each replace an "active" that was true of the binding's own bookkeeping
+  // and false of everything the caller could do with it.
   if (handle == nullptr)
     return "invalid";
-  if (handle->poisoned)
+
+  // Inherited across a fork(). Every operation refuses it, so it is no more
+  // usable here than a reclaimed one.
+  if (handle->pid != mdbx_r::current_pid())
+    return "invalid";
+
+  // Poisoned by a libmdbx assertion failure, in this transaction or in the
+  // environment that owns it -- either way nothing may touch it again.
+  if (handle->poisoned ||
+      (handle->owner != nullptr && handle->owner->poisoned))
     return "poisoned";
 
   switch (handle->state) {
   case mdbx_r::txn_state::active:
+    // libmdbx sets MDBX_TXN_ERROR when an operation failed in a way the
+    // transaction cannot continue from -- MDBX_MAP_FULL above all. Every later
+    // operation then fails with MDBX_BAD_TXN and the commit reports a
+    // rollback, so "active" was the one thing this was not.
+    if (handle->txn != nullptr &&
+        (mdbx_txn_flags(handle->txn) & MDBX_TXN_ERROR) != 0)
+      return "failed";
     return "active";
   case mdbx_r::txn_state::committed:
     return "committed";
@@ -1594,7 +1663,7 @@ void drop_call(void *data) {
 }
 
 void poison_drop(void *data) {
-  static_cast<drop_context *>(data)->handle->poisoned = true;
+  mdbx_r::poison_txn(static_cast<drop_context *>(data)->handle);
 }
 
 } // namespace
@@ -1615,7 +1684,7 @@ void sequence_call(void *data) {
 }
 
 void poison_sequence(void *data) {
-  static_cast<sequence_context *>(data)->handle->poisoned = true;
+  mdbx_r::poison_txn(static_cast<sequence_context *>(data)->handle);
 }
 
 } // namespace
@@ -1721,7 +1790,7 @@ void list_call(void *data) {
 }
 
 void poison_list(void *data) {
-  static_cast<list_context *>(data)->handle->poisoned = true;
+  mdbx_r::poison_txn(static_cast<list_context *>(data)->handle);
 }
 
 } // namespace
@@ -1877,6 +1946,23 @@ void mdbx_test_panic_stat_(cpp11::sexp env, bool info) {
                                     MDBX_SUCCESS};
     mdbx_r::guard(panic_immediately, &context, mdbx_r::poison_stat);
   }
+}
+
+// Internal regression hook, as above but for a transaction operation: drive a
+// panic through the guard mdbx_get() installs, using the real get_context and
+// the real poison_get.
+//
+// Every transaction-backed callback used to poison the transaction alone,
+// leaving the environment believing itself healthy -- so this asserts the
+// owner comes back poisoned too, which is what keeps the environment's close
+// from handing libmdbx a transaction that was never ended.
+[[cpp11::register]]
+void mdbx_test_panic_get_(cpp11::sexp txn) {
+  mdbx_r::txn_handle *handle = mdbx_r::txn_from_sexp(txn);
+
+  mdbx_r::get_context context = {handle, {nullptr, 0}, {nullptr, 0},
+                                 MDBX_SUCCESS};
+  mdbx_r::guard(panic_immediately, &context, mdbx_r::poison_get);
 }
 
 // Internal regression hook. It deliberately enters the panic path and checks

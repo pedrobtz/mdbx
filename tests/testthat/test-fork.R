@@ -62,6 +62,11 @@ test_that("an inherited transaction is refused too", {
   env <- local_seeded_env()
   txn <- mdbx_txn_begin(env, write = TRUE)
 
+  # And it reports as unusable rather than "active": every operation in the
+  # child refuses it, so the state has to say so too.
+  expect_identical(in_fork(function() mdbx_txn_state(txn)), "invalid")
+  expect_identical(mdbx_txn_state(txn), "active")
+
   expect_match(in_fork(function() mdbx_get(txn, "k")), "transaction belongs to process")
   expect_match(in_fork(function() mdbx_txn_commit(txn)), "transaction belongs to process")
   expect_match(in_fork(function() mdbx_keys(txn)), "belongs to process")
