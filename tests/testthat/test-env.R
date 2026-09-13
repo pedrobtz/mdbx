@@ -87,6 +87,79 @@ test_that("a second open on the same path in one process is refused by name", {
   mdbx_env_close(reopened)
 })
 
+test_that("an open that fails does not reserve the path", {
+  # Registration happens only once libmdbx has accepted the open. A failure
+  # that registered anyway would lock the path out for the session.
+  dir <- tempfile()
+  path <- file.path(dir, "nested", "cache.mdbx")
+
+  # Fails inside libmdbx: the parent directories do not exist yet.
+  expect_error(mdbx_env_open(path, map_size = test_map_size), "mdbx error")
+
+  dir.create(dirname(path), recursive = TRUE)
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  on.exit(mdbx_env_close(env), add = TRUE)
+  expect_true(mdbx_env_is_open(env))
+})
+
+test_that("a close refused for an open transaction keeps the path taken", {
+  path <- env_path()
+
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  txn <- mdbx_txn_begin(env, write = TRUE)
+
+  # The refusal happens before anything is detached, so the environment is
+  # still open and the path still belongs to it.
+  expect_error(mdbx_env_close(env), "still open")
+  expect_error(mdbx_env_open(path, map_size = test_map_size),
+               "already open in this process")
+
+  mdbx_txn_abort(txn)
+  mdbx_env_close(env)
+
+  reopened <- mdbx_env_open(path, map_size = test_map_size)
+  on.exit(mdbx_env_close(reopened), add = TRUE)
+  expect_true(mdbx_env_is_open(reopened))
+})
+
+test_that("a directory-layout environment is refused the same way", {
+  dir <- file.path(tempdir(), sprintf("dup-%d", sample.int(1e6, 1)))
+
+  env <- mdbx_env_open(dir, subdir = TRUE, map_size = test_map_size)
+  expect_error(mdbx_env_open(dir, map_size = test_map_size),
+               "already open in this process")
+
+  mdbx_env_close(env)
+  mdbx_env_close(mdbx_env_open(dir, map_size = test_map_size))
+})
+
+test_that("the registry of open paths does not grow", {
+  # A leaked entry refuses a reopen libmdbx would have allowed, and nothing
+  # else would show it -- mdbx_env_live_count_() counts handles, not paths.
+  #
+  # gc() first, as the live-handle tests below do: environments other tests
+  # abandoned are still registered until their finalizers run, and the baseline
+  # has to be taken once they have.
+  gc()
+  before <- mdbx:::mdbx_env_open_count_()
+
+  for (i in 1:5) {
+    env <- mdbx_env_open(env_path(), map_size = test_map_size)
+    expect_identical(mdbx:::mdbx_env_open_count_(), before + 1L)
+    mdbx_env_close(env)
+    expect_identical(mdbx:::mdbx_env_open_count_(), before)
+  }
+
+  # Including the ones nobody closed, and the ones that never opened.
+  local(invisible(mdbx_env_open(env_path(), map_size = test_map_size)))
+  expect_error(mdbx_env_open(file.path(tempfile(), "no", "where.mdbx")), "mdbx error")
+
+  gc()
+  gc()
+
+  expect_identical(mdbx:::mdbx_env_open_count_(), before)
+})
+
 test_that("an environment collected without an explicit close frees its path", {
   path <- env_path()
 

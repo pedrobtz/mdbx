@@ -108,6 +108,10 @@ mdbx_env_live_count_ <- function() {
   .Call(`_mdbx_mdbx_env_live_count_`)
 }
 
+mdbx_env_open_count_ <- function() {
+  .Call(`_mdbx_mdbx_env_open_count_`)
+}
+
 mdbx_limits_ <- function(pagesize) {
   .Call(`_mdbx_mdbx_limits_`, pagesize)
 }

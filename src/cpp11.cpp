@@ -200,6 +200,13 @@ extern "C" SEXP _mdbx_mdbx_env_live_count_() {
   END_CPP11
 }
 // r_mdbx.cpp
+int mdbx_env_open_count_();
+extern "C" SEXP _mdbx_mdbx_env_open_count_() {
+  BEGIN_CPP11
+    return cpp11::as_sexp(mdbx_env_open_count_());
+  END_CPP11
+}
+// r_mdbx.cpp
 cpp11::list mdbx_limits_(double pagesize);
 extern "C" SEXP _mdbx_mdbx_limits_(SEXP pagesize) {
   BEGIN_CPP11
@@ -302,6 +309,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_mdbx_mdbx_env_is_open_",          (DL_FUNC) &_mdbx_mdbx_env_is_open_,          1},
     {"_mdbx_mdbx_env_live_count_",       (DL_FUNC) &_mdbx_mdbx_env_live_count_,       0},
     {"_mdbx_mdbx_env_open_",             (DL_FUNC) &_mdbx_mdbx_env_open_,             8},
+    {"_mdbx_mdbx_env_open_count_",       (DL_FUNC) &_mdbx_mdbx_env_open_count_,       0},
     {"_mdbx_mdbx_env_path_",             (DL_FUNC) &_mdbx_mdbx_env_path_,             1},
     {"_mdbx_mdbx_env_reader_check_",     (DL_FUNC) &_mdbx_mdbx_env_reader_check_,     1},
     {"_mdbx_mdbx_env_set_flags_",        (DL_FUNC) &_mdbx_mdbx_env_set_flags_,        3},

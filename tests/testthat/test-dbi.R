@@ -115,6 +115,81 @@ test_that("a missing database is named, not reported as a missing key", {
   mdbx_env_close(env)
 })
 
+test_that("every db = entry point names a missing database", {
+  env <- multi_env()
+
+  txn <- mdbx_txn_begin(env, write = TRUE)
+  ghost <- mdbx_dbi_open(txn, "ghost", create = TRUE)
+  mdbx_txn_abort(txn)
+
+  # A stale handle reaches ensure_dbi(), not mdbx_dbi_open_(), so every one of
+  # these is a separate path to the same refusal. Reporting "no matching
+  # key/data pair" for a `db` argument contradicts mdbx_get() outright, which
+  # documents a missing key as NULL rather than an error.
+  missing <- "named database 'ghost' does not exist"
+
+  mdbx_with_read(env, function(txn) {
+    expect_error(mdbx_get(txn, "k", db = ghost), missing)
+    expect_error(mdbx_keys(txn, db = ghost), missing)
+    expect_error(mdbx_items(txn, db = ghost), missing)
+    expect_error(mdbx_dbi_sequence(txn, ghost), missing)
+  })
+
+  # The write entry points resolve the name the same way, and a write
+  # transaction does not create one it was not asked to create.
+  mdbx_with_write(env, function(txn) {
+    expect_error(mdbx_put(txn, "k", "v", db = ghost), missing)
+    expect_error(mdbx_del(txn, "k", db = ghost), missing)
+    expect_error(mdbx_dbi_drop(txn, ghost), missing)
+  })
+
+  expect_identical(mdbx_with_read(env, function(txn) mdbx_dbi_list(txn)), character(0))
+
+  mdbx_env_close(env)
+})
+
+test_that("a database name is not read as a format string", {
+  env <- multi_env()
+
+  # The refusal is built with a printf-style format, and the name is a string
+  # the caller chose. It has to arrive as an argument, never as the format.
+  hostile <- "%s %d %n %99999f"
+  message <- conditionMessage(tryCatch(
+    mdbx_with_read(env, function(txn) mdbx_dbi_open(txn, hostile)),
+    error = identity
+  ))
+
+  expect_match(message, hostile, fixed = TRUE)
+  expect_identical(mdbx_version()$major, 0L)
+
+  # Nor does a name outside ASCII come back mangled. Written as an escape so
+  # the test file itself stays ASCII, as the rest of the suite is.
+  accented <- "caf\u00e9"
+  expect_error(mdbx_with_read(env, function(txn) mdbx_dbi_open(txn, accented)),
+               accented, fixed = TRUE)
+
+  mdbx_env_close(env)
+})
+
+test_that("deleting a database mid-transaction re-resolves its name", {
+  env <- multi_env()
+
+  mdbx_with_write(env, function(txn) {
+    db <- mdbx_dbi_open(txn, "doomed", create = TRUE)
+    mdbx_put(txn, "k", "v", db = db)
+    mdbx_dbi_drop(txn, db, delete = TRUE)
+
+    # The per-transaction cache has to forget the deleted handle: reusing the
+    # spent MDBX_dbi is what this would otherwise do.
+    expect_error(mdbx_get(txn, "k", db = db), "named database 'doomed' does not exist")
+    expect_error(mdbx_dbi_open(txn, "doomed"), "named database 'doomed' does not exist")
+    expect_identical(mdbx_dbi_list(txn), character(0))
+  })
+
+  expect_identical(mdbx_version()$major, 0L)
+  mdbx_env_close(env)
+})
+
 test_that("creating a database in a read transaction names the conflict", {
   env <- multi_env()
 

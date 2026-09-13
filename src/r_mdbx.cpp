@@ -1473,6 +1473,13 @@ int mdbx_env_txn_count_(cpp11::sexp env) {
 [[cpp11::register]]
 int mdbx_env_live_count_() { return mdbx_r::live_env_handles; }
 
+// Internal test hook: how many paths the open registry is holding. An entry
+// left behind would refuse a reopen that libmdbx would have allowed, which is
+// invisible until someone hits it -- so the suite asserts the count returns to
+// where it started.
+[[cpp11::register]]
+int mdbx_env_open_count_() { return static_cast<int>(mdbx_r::open_envs.size()); }
+
 // The size limits libmdbx computes for a given page size.
 //
 // No panic guard: these are arithmetic on a page size, touching neither an
