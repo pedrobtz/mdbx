@@ -21,7 +21,12 @@
 #' by name in later ones, so the returned handle stays usable for the life of
 #' the environment — but only if the transaction that created it **commits**.
 #' If it aborts, the database was never created and the handle refers to
-#' nothing; using it then is an ordinary "not found" error.
+#' nothing; passing it as `db` then reports the database as missing, naming it.
+#'
+#' Opening a database that does not exist is an error rather than `NULL`: a
+#' name is something you wrote, so a mistyped one is worth reporting where it
+#' was written. To find out whether one exists without handling an error, look
+#' for it in [mdbx_dbi_list()].
 #'
 #' Reserve capacity with `max_dbs` in [mdbx_env_open()] before opening any: the
 #' libmdbx default leaves no room for named databases at all, and running out
@@ -30,12 +35,14 @@
 #' @param txn An `mdbx_txn` object, from [mdbx_txn_begin()]. Creating a database
 #'   needs a write transaction; opening an existing one does not.
 #' @param name The database's name, a single string.
-#' @param create If `TRUE`, create the database when it does not exist. If
-#'   `FALSE`, opening a database that was never created is an error.
+#' @param create If `TRUE`, create the database when it does not exist — which
+#'   needs a write transaction, and is refused in a read one. If `FALSE`,
+#'   opening a database that was never created is an error naming it.
 #'
 #' @return An `mdbx_dbi` object, to pass as the `db` argument of [mdbx_get()],
 #'   [mdbx_put()], [mdbx_del()], [mdbx_keys()] and [mdbx_items()].
-#' @seealso [mdbx_dbi_drop()], [mdbx_env_open()] for `max_dbs`
+#' @seealso [mdbx_dbi_list()], [mdbx_dbi_drop()], [mdbx_env_open()] for
+#'   `max_dbs`
 #' @export
 #' @examples
 #' path <- tempfile(fileext = ".mdbx")

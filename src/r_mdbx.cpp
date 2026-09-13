@@ -1132,6 +1132,20 @@ cpp11::sexp raw_from_val(const MDBX_val &value) {
   return out;
 }
 
+// Refuse a named database that does not exist.
+//
+// libmdbx answers this with MDBX_NOTFOUND, whose text is "No matching
+// key/data pair found" -- which describes a lookup that never happened and
+// reads like the missing-key result mdbx_get() reports as NULL. Say which
+// database was wanted, in which environment, and what would have created it.
+[[noreturn]] void stop_missing_dbi(mdbx_r::txn_handle *handle,
+                                   const std::string &name) {
+  // owner is non-null for any transaction txn_from_sexp() let through.
+  cpp11::stop("named database '%s' does not exist in '%s'; pass create = TRUE "
+              "inside a write transaction to create it",
+              name.c_str(), handle->owner->path.c_str());
+}
+
 // The main database handle, opened on first use and reused for the rest of the
 // transaction.
 // Point handle->dbi at the database this operation addresses, opening it in
@@ -1156,6 +1170,12 @@ MDBX_dbi ensure_dbi(mdbx_r::txn_handle *handle, const std::string *name) {
                                  MDBX_DB_DEFAULTS, 0, MDBX_SUCCESS};
 
   mdbx_r::guard(mdbx_r::dbi_call, &context, mdbx_r::poison_dbi);
+
+  // A `db` handle whose creating transaction aborted, or whose database has
+  // since been dropped, arrives here rather than at mdbx_dbi_open_().
+  if (context.rc == MDBX_NOTFOUND && name != nullptr)
+    stop_missing_dbi(handle, *name);
+
   mdbx_r::check(context.rc);
 
   if (name == nullptr) {
@@ -1503,12 +1523,24 @@ cpp11::list mdbx_limits_(double pagesize) {
 void mdbx_dbi_open_(cpp11::sexp txn, std::string name, bool create) {
   mdbx_r::txn_handle *handle = mdbx_r::txn_from_sexp(txn);
 
+  // Creating a database is a write. libmdbx would report a bare EACCES, the
+  // same status writable_txn() already refuses to pass on for mdbx_put().
+  if (create && !handle->write)
+    cpp11::stop("cannot create a named database in a read-only transaction; "
+                "begin one with write = TRUE");
+
   mdbx_r::dbi_context context = {
       handle, name.c_str(),
       static_cast<unsigned>(create ? MDBX_CREATE : MDBX_DB_DEFAULTS), 0,
       MDBX_SUCCESS};
 
   mdbx_r::guard(mdbx_r::dbi_call, &context, mdbx_r::poison_dbi);
+
+  // Only reachable with create = FALSE: a write transaction asked to create
+  // one does not come back empty-handed.
+  if (context.rc == MDBX_NOTFOUND)
+    stop_missing_dbi(handle, name);
+
   mdbx_r::check(context.rc);
 
   for (auto &entry : handle->named) {

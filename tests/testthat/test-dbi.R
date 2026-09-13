@@ -60,12 +60,12 @@ test_that("a database only exists once its creating transaction commits", {
   # This is why the handle stores a name and not an MDBX_dbi: the dbi from that
   # transaction is poisoned, and the database was never created.
   mdbx_with_read(env, function(txn) {
-    expect_error(mdbx_dbi_open(txn, "ghost"), "MDBX_NOTFOUND")
+    expect_error(mdbx_dbi_open(txn, "ghost"), "named database 'ghost' does not exist")
   })
 
   # The same handle object is simply stale, not dangerous.
   mdbx_with_read(env, function(txn) {
-    expect_error(mdbx_get(txn, "k", db = ghost), "MDBX_NOTFOUND")
+    expect_error(mdbx_get(txn, "k", db = ghost), "named database 'ghost' does not exist")
   })
 
   mdbx_env_close(env)
@@ -75,7 +75,7 @@ test_that("opening a database that does not exist needs create = TRUE", {
   env <- multi_env()
 
   mdbx_with_read(env, function(txn) {
-    expect_error(mdbx_dbi_open(txn, "absent"), "MDBX_NOTFOUND")
+    expect_error(mdbx_dbi_open(txn, "absent"), "named database 'absent' does not exist")
   })
 
   mdbx_with_write(env, function(txn) {
@@ -86,6 +86,52 @@ test_that("opening a database that does not exist needs create = TRUE", {
   mdbx_with_read(env, function(txn) {
     expect_s3_class(mdbx_dbi_open(txn, "absent"), "mdbx_dbi")
   })
+
+  mdbx_env_close(env)
+})
+
+test_that("a missing database is named, not reported as a missing key", {
+  env <- multi_env()
+  path <- attr(env, "path")
+
+  # libmdbx answers this with MDBX_NOTFOUND, whose text -- "No matching
+  # key/data pair found" -- describes a lookup that never happened, and reads
+  # like the missing-key result mdbx_get() reports as NULL.
+  message <- conditionMessage(tryCatch(
+    mdbx_with_read(env, function(txn) mdbx_dbi_open(txn, "missing")),
+    error = identity
+  ))
+
+  expect_match(message, "named database 'missing' does not exist", fixed = TRUE)
+  expect_match(message, path, fixed = TRUE)
+  expect_match(message, "pass create = TRUE inside a write transaction", fixed = TRUE)
+  expect_false(grepl("NOTFOUND", message, fixed = TRUE))
+
+  # The same in a write transaction: it is create = FALSE that decided, not
+  # the mode of the transaction.
+  expect_error(mdbx_with_write(env, function(txn) mdbx_dbi_open(txn, "missing")),
+               "named database 'missing' does not exist")
+
+  mdbx_env_close(env)
+})
+
+test_that("creating a database in a read transaction names the conflict", {
+  env <- multi_env()
+
+  # libmdbx reports a bare EACCES here. mdbx_put() has always pre-empted that
+  # for a write; creating a database is one too.
+  message <- conditionMessage(tryCatch(
+    mdbx_with_read(env, function(txn) mdbx_dbi_open(txn, "wanted", create = TRUE)),
+    error = identity
+  ))
+
+  expect_match(message, "cannot create a named database in a read-only transaction",
+               fixed = TRUE)
+  expect_match(message, "write = TRUE", fixed = TRUE)
+  expect_false(grepl("mdbx error", message, fixed = TRUE))
+
+  # Refused before libmdbx, so nothing was created on the way out.
+  expect_identical(mdbx_with_read(env, function(txn) mdbx_dbi_list(txn)), character(0))
 
   mdbx_env_close(env)
 })
@@ -136,7 +182,9 @@ test_that("a database can be emptied or deleted", {
     mdbx_dbi_drop(txn, mdbx_dbi_open(txn, "scratch"), delete = TRUE)
   })
 
-  mdbx_with_read(env, function(txn) expect_error(mdbx_dbi_open(txn, "scratch"), "MDBX_NOTFOUND"))
+  mdbx_with_read(env, function(txn) {
+    expect_error(mdbx_dbi_open(txn, "scratch"), "named database 'scratch' does not exist")
+  })
 
   mdbx_env_close(env)
 })

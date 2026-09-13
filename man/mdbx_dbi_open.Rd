@@ -12,8 +12,9 @@ needs a write transaction; opening an existing one does not.}
 
 \item{name}{The database's name, a single string.}
 
-\item{create}{If \code{TRUE}, create the database when it does not exist. If
-\code{FALSE}, opening a database that was never created is an error.}
+\item{create}{If \code{TRUE}, create the database when it does not exist — which
+needs a write transaction, and is refused in a read one. If \code{FALSE},
+opening a database that was never created is an error naming it.}
 }
 \value{
 An \code{mdbx_dbi} object, to pass as the \code{db} argument of \code{\link[=mdbx_get]{mdbx_get()}},
@@ -30,7 +31,12 @@ The database is opened for the duration of this transaction and re-resolved
 by name in later ones, so the returned handle stays usable for the life of
 the environment — but only if the transaction that created it \strong{commits}.
 If it aborts, the database was never created and the handle refers to
-nothing; using it then is an ordinary "not found" error.
+nothing; passing it as \code{db} then reports the database as missing, naming it.
+
+Opening a database that does not exist is an error rather than \code{NULL}: a
+name is something you wrote, so a mistyped one is worth reporting where it
+was written. To find out whether one exists without handling an error, look
+for it in \code{\link[=mdbx_dbi_list]{mdbx_dbi_list()}}.
 
 Reserve capacity with \code{max_dbs} in \code{\link[=mdbx_env_open]{mdbx_env_open()}} before opening any: the
 libmdbx default leaves no room for named databases at all, and running out
@@ -58,5 +64,6 @@ mdbx_env_close(env)
 unlink(c(path, paste0(path, "-lck")))
 }
 \seealso{
-\code{\link[=mdbx_dbi_drop]{mdbx_dbi_drop()}}, \code{\link[=mdbx_env_open]{mdbx_env_open()}} for \code{max_dbs}
+\code{\link[=mdbx_dbi_list]{mdbx_dbi_list()}}, \code{\link[=mdbx_dbi_drop]{mdbx_dbi_drop()}}, \code{\link[=mdbx_env_open]{mdbx_env_open()}} for
+\code{max_dbs}
 }
