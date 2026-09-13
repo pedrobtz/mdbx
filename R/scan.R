@@ -164,6 +164,9 @@ check_limit <- function(limit) {
 #' honoured, including `limit = Inf` to say "all of them, really".
 #'
 #' @format A single number.
+#' @return A length-one numeric vector, `1e6`. It is a constant rather than a
+#'   function: its value is the number of records above which [mdbx_keys()] and
+#'   [mdbx_items()] refuse a scan that was given no `limit`.
 #' @seealso [mdbx_keys()], [mdbx_items()]
 #' @export
 #' @examples

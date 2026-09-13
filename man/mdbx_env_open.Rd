@@ -83,6 +83,17 @@ transactions and all data access happen against one.
 The environment is closed when \code{\link[=mdbx_env_close]{mdbx_env_close()}} is called on it, or when the
 object is garbage collected, whichever happens first. Relying on garbage
 collection is safe but not timely; close explicitly when the moment matters.
+
+One handle per environment per process. 'libmdbx' documents opening an
+environment more than once from a single process as an error, so a second
+call on a path this process already has open is refused whatever its other
+arguments say — keep the handle you were given and share it, or close it
+first. The refusal looks past the spelling: a relative path and an absolute
+one, a symlinked directory, and the \code{mdbx.dat} inside a \code{subdir = TRUE}
+environment all name the environment they resolve to, and the message says
+which spelling the open handle was created under. Other processes are
+unaffected: opening the same environment concurrently from several of them
+is the normal case, and the one \link{mdbx-concurrency} is about.
 }
 \examples{
 path <- tempfile(fileext = ".mdbx")

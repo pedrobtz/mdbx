@@ -118,6 +118,31 @@ test_that("a worker that opens its own environment works normally", {
   expect_identical(unlist(results), rep("v", 4))
 })
 
+test_that("the one-open-per-process rule does not follow a fork", {
+  skip_if_cannot_fork()
+
+  env <- local_seeded_env()
+  path <- attr(env, "path")
+
+  # The registry of open environments is copied into the child along with the
+  # rest of memory, but the entries in it belong to the parent. A child opening
+  # the environment for itself is the documented way to use mdbx under
+  # mclapply(), so it must not be refused as a second open.
+  results <- parallel::mclapply(1:2, function(i) {
+    tryCatch({
+      worker <- mdbx_env_open(path, map_size = test_map_size)
+      on.exit(mdbx_env_close(worker))
+      mdbx_with_read(worker, function(txn) mdbx_get(txn, "k"))
+    }, error = conditionMessage)
+  }, mc.cores = 2)
+
+  expect_identical(unlist(results), c("v", "v"))
+
+  # And the parent, which held it open throughout, is unaffected.
+  expect_identical(mdbx_with_read(env, function(t) mdbx_get(t, "k")), "v")
+  mdbx_env_close(env)
+})
+
 test_that("a parent survives its children refusing the environment", {
   skip_if_cannot_fork()
 

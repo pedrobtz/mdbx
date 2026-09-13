@@ -61,6 +61,224 @@ test_that("an environment can be reopened at the same path", {
   expect_identical(basename(mdbx:::mdbx_env_path_(second)), basename(path))
 })
 
+test_that("a second open on the same path in one process is refused by name", {
+  path <- env_path()
+
+  env <- mdbx_env_open(path, map_size = test_map_size)
+
+  # libmdbx forbids this, and reports it as whatever its lock file failed with
+  # -- EAGAIN on macOS. The refusal has to name the conflict instead, whatever
+  # the second call's other arguments say.
+  expect_error(mdbx_env_open(path, map_size = test_map_size),
+               "already open in this process")
+  expect_error(mdbx_env_open(path, readonly = TRUE, map_size = test_map_size),
+               "already open in this process")
+  expect_error(mdbx_env_open(path, flags = "ACCEDE", map_size = test_map_size),
+               "already open in this process")
+
+  # The first handle is untouched by the refusals.
+  expect_true(mdbx_env_is_open(env))
+  mdbx_with_write(env, function(txn) mdbx_put(txn, "k", "v"))
+
+  # And the path is free again the moment it closes.
+  mdbx_env_close(env)
+  reopened <- mdbx_env_open(path, map_size = test_map_size)
+  expect_identical(mdbx_with_read(reopened, function(txn) mdbx_get(txn, "k")), "v")
+  mdbx_env_close(reopened)
+})
+
+test_that("an open that fails does not reserve the path", {
+  # Registration happens only once libmdbx has accepted the open. A failure
+  # that registered anyway would lock the path out for the session.
+  dir <- tempfile()
+  path <- file.path(dir, "nested", "cache.mdbx")
+
+  # Fails inside libmdbx: the parent directories do not exist yet.
+  expect_error(mdbx_env_open(path, map_size = test_map_size), "mdbx error")
+
+  dir.create(dirname(path), recursive = TRUE)
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  on.exit(mdbx_env_close(env), add = TRUE)
+  expect_true(mdbx_env_is_open(env))
+})
+
+test_that("a close refused for an open transaction keeps the path taken", {
+  path <- env_path()
+
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  txn <- mdbx_txn_begin(env, write = TRUE)
+
+  # The refusal happens before anything is detached, so the environment is
+  # still open and the path still belongs to it.
+  expect_error(mdbx_env_close(env), "still open")
+  expect_error(mdbx_env_open(path, map_size = test_map_size),
+               "already open in this process")
+
+  mdbx_txn_abort(txn)
+  mdbx_env_close(env)
+
+  reopened <- mdbx_env_open(path, map_size = test_map_size)
+  on.exit(mdbx_env_close(reopened), add = TRUE)
+  expect_true(mdbx_env_is_open(reopened))
+})
+
+test_that("a directory-layout environment is refused the same way", {
+  dir <- file.path(tempdir(), sprintf("dup-%d", sample.int(1e6, 1)))
+
+  env <- mdbx_env_open(dir, subdir = TRUE, map_size = test_map_size)
+  expect_error(mdbx_env_open(dir, map_size = test_map_size),
+               "already open in this process")
+
+  mdbx_env_close(env)
+  mdbx_env_close(mdbx_env_open(dir, map_size = test_map_size))
+})
+
+test_that("two spellings of one path are one environment", {
+  # The registry compares strings, so env_key() canonicalises them first.
+  # Without it each of these reaches libmdbx and fails on the lock file.
+  dir <- tempfile("spell-")
+  dir.create(dir)
+  path <- file.path(dir, "c.mdbx")
+
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  on.exit(mdbx_env_close(env), add = TRUE)
+
+  expect_error(mdbx_env_open(file.path(dir, ".", "c.mdbx"), map_size = test_map_size),
+               "already open in this process")
+  expect_error(mdbx_env_open(file.path(dir, "..", basename(dir), "c.mdbx"),
+                             map_size = test_map_size),
+               "already open in this process")
+
+  # And relative to the directory itself.
+  old <- setwd(dir)
+  on.exit(setwd(old), add = TRUE, after = FALSE)
+  expect_error(mdbx_env_open("c.mdbx", map_size = test_map_size),
+               "already open in this process")
+  expect_error(mdbx_env_open("./c.mdbx", map_size = test_map_size),
+               "already open in this process")
+})
+
+test_that("a refusal names the spelling the open handle was created under", {
+  # Matching on the canonical key means the caller can be refused over a path
+  # they did not write. The one they did write is no use on its own.
+  dir <- tempfile("spell-")
+  dir.create(dir)
+  path <- file.path(dir, "c.mdbx")
+
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  on.exit(mdbx_env_close(env), add = TRUE)
+
+  message <- conditionMessage(tryCatch(
+    mdbx_env_open(file.path(dir, ".", "c.mdbx"), map_size = test_map_size),
+    error = identity
+  ))
+  expect_match(message, file.path(dir, ".", "c.mdbx"), fixed = TRUE)
+  expect_match(message, sprintf("as '%s'", path), fixed = TRUE)
+
+  # The same spelling twice says it once, with no "as" clause to puzzle over.
+  same <- conditionMessage(tryCatch(
+    mdbx_env_open(path, map_size = test_map_size), error = identity
+  ))
+  expect_false(grepl(", as '", same, fixed = TRUE))
+})
+
+test_that("a symlinked directory is the same environment", {
+  skip_on_os("windows")
+
+  dir <- tempfile("real-")
+  dir.create(dir)
+  link <- tempfile("link-")
+  skip_if_not(file.symlink(dir, link), "could not create a symlink")
+
+  env <- mdbx_env_open(file.path(dir, "c.mdbx"), map_size = test_map_size)
+  on.exit(mdbx_env_close(env), add = TRUE)
+
+  expect_error(mdbx_env_open(file.path(link, "c.mdbx"), map_size = test_map_size),
+               "already open in this process")
+})
+
+test_that("a subdir environment and its data file are the same environment", {
+  # With subdir = TRUE the environment is the directory and its data lives in
+  # mdbx.dat; that file is a second, perfectly ordinary spelling of it.
+  dir <- tempfile("sub-")
+
+  env <- mdbx_env_open(dir, subdir = TRUE, map_size = test_map_size)
+  on.exit(mdbx_env_close(env), add = TRUE)
+
+  expect_error(mdbx_env_open(file.path(dir, "mdbx.dat"), map_size = test_map_size),
+               "already open in this process")
+
+  # A trailing slash is the same directory, as basename() and dirname() read it.
+  expect_error(mdbx_env_open(paste0(dir, "/"), subdir = TRUE, map_size = test_map_size),
+               "already open in this process")
+
+  # And the other way round: the data file first, then the directory.
+  other <- tempfile("sub-")
+  dir.create(other)
+  first <- mdbx_env_open(file.path(other, "mdbx.dat"), map_size = test_map_size)
+  on.exit(mdbx_env_close(first), add = TRUE)
+  expect_error(mdbx_env_open(other, subdir = TRUE, map_size = test_map_size),
+               "already open in this process")
+})
+
+test_that("subdir decides the layout only when nothing is there yet", {
+  # `subdir` says what to *create*; an environment that already exists has a
+  # layout of its own. Letting the argument decide regardless would key
+  # subdir = TRUE against an existing single-file environment as a directory
+  # that cannot exist, and this open would miss the registry.
+  path <- env_path()
+
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  on.exit(mdbx_env_close(env), add = TRUE)
+  expect_false(attr(env, "subdir"))
+
+  expect_error(mdbx_env_open(path, subdir = TRUE, map_size = test_map_size),
+               "already open in this process")
+})
+
+test_that("the registry of open paths does not grow", {
+  # A leaked entry refuses a reopen libmdbx would have allowed, and nothing
+  # else would show it -- mdbx_env_live_count_() counts handles, not paths.
+  #
+  # gc() first, as the live-handle tests below do: environments other tests
+  # abandoned are still registered until their finalizers run, and the baseline
+  # has to be taken once they have.
+  gc()
+  before <- mdbx:::mdbx_env_open_count_()
+
+  for (i in 1:5) {
+    env <- mdbx_env_open(env_path(), map_size = test_map_size)
+    expect_identical(mdbx:::mdbx_env_open_count_(), before + 1L)
+    mdbx_env_close(env)
+    expect_identical(mdbx:::mdbx_env_open_count_(), before)
+  }
+
+  # Including the ones nobody closed, and the ones that never opened.
+  local(invisible(mdbx_env_open(env_path(), map_size = test_map_size)))
+  expect_error(mdbx_env_open(file.path(tempfile(), "no", "where.mdbx")), "mdbx error")
+
+  gc()
+  gc()
+
+  expect_identical(mdbx:::mdbx_env_open_count_(), before)
+})
+
+test_that("an environment collected without an explicit close frees its path", {
+  path <- env_path()
+
+  # The registry entry is dropped by whichever of close and finalization
+  # happens first, so a handle abandoned to the GC must not hold the path.
+  local({
+    abandoned <- mdbx_env_open(path, map_size = test_map_size)
+    invisible(NULL)
+  })
+  gc()
+
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  on.exit(mdbx_env_close(env), add = TRUE)
+  expect_true(mdbx_env_is_open(env))
+})
+
 test_that("an existing environment can be opened read-only", {
   path <- env_path()
 
@@ -257,7 +475,7 @@ test_that("sizes that could not survive the cast are refused", {
 
   # The native entry point guards its own casts too: ::: reaches it directly.
   expect_error(
-    mdbx:::mdbx_env_open_(path, FALSE, FALSE, 1e20, 0, 0, 436L, character()),
+    mdbx:::mdbx_env_open_(path, path, FALSE, FALSE, 1e20, 0, 0, 436L, character()),
     "too large"
   )
 

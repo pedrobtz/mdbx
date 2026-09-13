@@ -15,8 +15,15 @@ within one}.
 'libmdbx' binds a transaction to the thread that began it, and R is
 single-threaded. An environment therefore supports exactly one live
 transaction: \code{\link[=mdbx_txn_begin]{mdbx_txn_begin()}} refuses a second rather than deadlocking, and
-\code{\link[=mdbx_env_close]{mdbx_env_close()}} refuses while one is open. Distinct environments — even
-two opened on the same file in the same session — are independent.
+\code{\link[=mdbx_env_close]{mdbx_env_close()}} refuses while one is open.
+
+There is no way around that by opening the environment twice. 'libmdbx'
+documents opening an environment more than once from a single process as an
+error, so \code{\link[=mdbx_env_open]{mdbx_env_open()}} refuses a path this process already has open,
+naming the conflict instead of reporting the lock failure 'libmdbx' would.
+Pass the handle you have, or close it first. A process that needs
+independent key spaces wants named databases (\code{\link[=mdbx_dbi_open]{mdbx_dbi_open()}}) rather than
+a second environment.
 
 Using a transaction from another thread is rejected by 'libmdbx' itself, with
 \code{MDBX_THREAD_MISMATCH}, because the package is compiled with
@@ -77,5 +84,6 @@ rather than failing on the difference. See \code{\link[=mdbx_flags]{mdbx_flags()
 }
 
 \seealso{
-\code{\link[=mdbx_txn_begin]{mdbx_txn_begin()}}, \code{\link[=mdbx_env_open]{mdbx_env_open()}}, \code{\link[=mdbx_flags]{mdbx_flags()}}
+\code{\link[=mdbx_txn_begin]{mdbx_txn_begin()}}, \code{\link[=mdbx_env_open]{mdbx_env_open()}}, \code{\link[=mdbx_dbi_open]{mdbx_dbi_open()}},
+\code{\link[=mdbx_flags]{mdbx_flags()}}
 }

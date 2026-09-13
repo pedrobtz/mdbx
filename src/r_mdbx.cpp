@@ -70,6 +70,45 @@ namespace {
 int live_env_handles = 0;
 int live_txn_handles = 0;
 
+// Every environment this process currently has open.
+//
+// libmdbx documents opening an environment more than once from a single
+// process as an error, and reports it as whatever the lock file's own failure
+// happened to be -- EAGAIN on macOS, and not necessarily that on another
+// platform. Neither the code nor the message says what went wrong, so the
+// conflict is detected here instead and named before libmdbx is reached.
+//
+// Entries are added once an open has succeeded and removed as soon as the
+// handle's environment is closed, by either the explicit close or the
+// finalizer, so a path reappears the moment reopening it would work.
+std::vector<env_handle *> open_envs;
+
+void register_env(env_handle *handle) { open_envs.push_back(handle); }
+
+void unregister_env(env_handle *handle) {
+  open_envs.erase(std::remove(open_envs.begin(), open_envs.end(), handle),
+                  open_envs.end());
+}
+
+// The open handle keyed by `key`, or null.
+//
+// Entries inherited across a fork() are skipped: the vector is copied into the
+// child along with everything else, but the environments it names belong to
+// the parent, and the child is entitled to open them itself.
+//
+// Keys are compared as strings, which is why env_key() in R/env.R canonicalises
+// them first: it resolves the directory, `.` and `..` and any symlink among
+// them, and names a directory-layout environment by its data file, so that the
+// spellings of one environment arrive here identical. What it cannot resolve is
+// a path whose own directory does not exist, and no environment can live there.
+env_handle *find_open_env(const std::string &key) {
+  for (env_handle *handle : open_envs) {
+    if (handle->key == key && handle->pid == current_pid())
+      return handle;
+  }
+  return nullptr;
+}
+
 [[noreturn]] void stop_after_panic(const mdbx_r_panic_info &panic) {
   cpp11::stop("libmdbx assertion failed: %s (%s:%u)", panic.message,
               panic.function, panic.line);
@@ -514,6 +553,10 @@ void close_handle(env_handle *handle, bool propagate) {
   if (handle->env == nullptr)
     return;
 
+  // Every path below detaches the environment from the handle, so the path it
+  // occupied is free from here on however this call ends.
+  unregister_env(handle);
+
   // Inherited across a fork(). Closing would release the parent's reader slot
   // and lock, from a process that never held them. Drop our copy of the pointer
   // and leave the environment to the process that owns it.
@@ -781,9 +824,10 @@ cpp11::list mdbx_version_() {
 // receives normalized values, where a non-positive max_dbs or map_size means
 // "leave the MDBX default alone".
 [[cpp11::register]]
-cpp11::sexp mdbx_env_open_(std::string path, bool readonly, bool subdir,
-                           double max_dbs, double map_size, double max_readers,
-                           int mode, cpp11::strings extra_flags) {
+cpp11::sexp mdbx_env_open_(std::string path, std::string key, bool readonly,
+                           bool subdir, double max_dbs, double map_size,
+                           double max_readers, int mode,
+                           cpp11::strings extra_flags) {
   // The named arguments come first, then whatever `flags` added; RDONLY and
   // NOSUBDIR are rejected in R precisely so the two cannot contradict.
   unsigned flags = MDBX_ENV_DEFAULTS | mdbx_r::env_flags_from_names(extra_flags);
@@ -802,6 +846,23 @@ cpp11::sexp mdbx_env_open_(std::string path, bool readonly, bool subdir,
     cpp11::stop("map_size is too large for this platform's address space");
   if (!(max_readers <= mdbx_r::max_exact_integer))
     cpp11::stop("max_readers is too large: at most 2^53");
+
+  // libmdbx would report the lock file's own failure -- EAGAIN, MDBX_BUSY or
+  // whatever the platform raises -- none of which says what happened. Name it.
+  //
+  // The incumbent's own spelling goes in the message when it differs from the
+  // one being refused: the caller matched it on the canonical key, so without
+  // it they are told that a path they did not write is already open.
+  if (mdbx_r::env_handle *incumbent = mdbx_r::find_open_env(key)) {
+    if (incumbent->path == path)
+      cpp11::stop("mdbx environment '%s' is already open in this process; use "
+                  "the existing handle, or close it before opening it again",
+                  path.c_str());
+    cpp11::stop("mdbx environment '%s' is already open in this process, as "
+                "'%s'; use the existing handle, or close it before opening it "
+                "again",
+                path.c_str(), incumbent->path.c_str());
+  }
 
   // The handle is allocated before the external pointer so that a failure to
   // open leaves nothing for R to reclaim; on success it is handed straight to
@@ -844,7 +905,16 @@ cpp11::sexp mdbx_env_open_(std::string path, bool readonly, bool subdir,
   // directory, and print.mdbx_env() said "single file" for it.
   const bool actual_subdir = (context.actual_flags & MDBX_NOSUBDIR) == 0;
 
-  return mdbx_r::new_env_sexp(handle.release(), path, readonly, actual_subdir);
+  handle->key = key;
+  handle->path = path;
+
+  // Registered only once the external pointer exists, so that a failure to
+  // build it cannot leave the registry holding an address nothing will free.
+  mdbx_r::env_handle *raw = handle.release();
+  cpp11::sexp env = mdbx_r::new_env_sexp(raw, path, readonly, actual_subdir);
+  mdbx_r::register_env(raw);
+
+  return env;
 }
 
 // Idempotent: closing an already-closed environment is a no-op, so that
@@ -1076,6 +1146,20 @@ cpp11::sexp raw_from_val(const MDBX_val &value) {
   return out;
 }
 
+// Refuse a named database that does not exist.
+//
+// libmdbx answers this with MDBX_NOTFOUND, whose text is "No matching
+// key/data pair found" -- which describes a lookup that never happened and
+// reads like the missing-key result mdbx_get() reports as NULL. Say which
+// database was wanted, in which environment, and what would have created it.
+[[noreturn]] void stop_missing_dbi(mdbx_r::txn_handle *handle,
+                                   const std::string &name) {
+  // owner is non-null for any transaction txn_from_sexp() let through.
+  cpp11::stop("named database '%s' does not exist in '%s'; pass create = TRUE "
+              "inside a write transaction to create it",
+              name.c_str(), handle->owner->path.c_str());
+}
+
 // The main database handle, opened on first use and reused for the rest of the
 // transaction.
 // Point handle->dbi at the database this operation addresses, opening it in
@@ -1100,6 +1184,12 @@ MDBX_dbi ensure_dbi(mdbx_r::txn_handle *handle, const std::string *name) {
                                  MDBX_DB_DEFAULTS, 0, MDBX_SUCCESS};
 
   mdbx_r::guard(mdbx_r::dbi_call, &context, mdbx_r::poison_dbi);
+
+  // A `db` handle whose creating transaction aborted, or whose database has
+  // since been dropped, arrives here rather than at mdbx_dbi_open_().
+  if (context.rc == MDBX_NOTFOUND && name != nullptr)
+    stop_missing_dbi(handle, *name);
+
   mdbx_r::check(context.rc);
 
   if (name == nullptr) {
@@ -1397,6 +1487,13 @@ int mdbx_env_txn_count_(cpp11::sexp env) {
 [[cpp11::register]]
 int mdbx_env_live_count_() { return mdbx_r::live_env_handles; }
 
+// Internal test hook: how many paths the open registry is holding. An entry
+// left behind would refuse a reopen that libmdbx would have allowed, which is
+// invisible until someone hits it -- so the suite asserts the count returns to
+// where it started.
+[[cpp11::register]]
+int mdbx_env_open_count_() { return static_cast<int>(mdbx_r::open_envs.size()); }
+
 // The size limits libmdbx computes for a given page size.
 //
 // No panic guard: these are arithmetic on a page size, touching neither an
@@ -1447,12 +1544,30 @@ cpp11::list mdbx_limits_(double pagesize) {
 void mdbx_dbi_open_(cpp11::sexp txn, std::string name, bool create) {
   mdbx_r::txn_handle *handle = mdbx_r::txn_from_sexp(txn);
 
+  // Creating a database is a write. libmdbx would report a bare EACCES, the
+  // same status writable_txn() already refuses to pass on for mdbx_put().
+  //
+  // libmdbx refuses on the flag, before it looks for the database, so this is
+  // reached whether or not the database already exists. The message says the
+  // flag needs a write transaction rather than that creation was impossible,
+  // which would describe something the caller may not have asked for.
+  if (create && !handle->write)
+    cpp11::stop("create = TRUE needs a write transaction; this mdbx "
+                "transaction is read-only, so begin one with write = TRUE, or "
+                "pass create = FALSE to open a database that already exists");
+
   mdbx_r::dbi_context context = {
       handle, name.c_str(),
       static_cast<unsigned>(create ? MDBX_CREATE : MDBX_DB_DEFAULTS), 0,
       MDBX_SUCCESS};
 
   mdbx_r::guard(mdbx_r::dbi_call, &context, mdbx_r::poison_dbi);
+
+  // Only reachable with create = FALSE: a write transaction asked to create
+  // one does not come back empty-handed.
+  if (context.rc == MDBX_NOTFOUND)
+    stop_missing_dbi(handle, name);
+
   mdbx_r::check(context.rc);
 
   for (auto &entry : handle->named) {
