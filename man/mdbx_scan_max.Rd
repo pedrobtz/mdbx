@@ -9,6 +9,11 @@ A single number.
 \usage{
 mdbx_scan_max
 }
+\value{
+A length-one numeric vector, \code{1e6}. It is a constant rather than a
+function: its value is the number of records above which \code{\link[=mdbx_keys]{mdbx_keys()}} and
+\code{\link[=mdbx_items]{mdbx_items()}} refuse a scan that was given no \code{limit}.
+}
 \description{
 A scan with no \code{limit} refuses to run when the database holds more records
 than this, rather than materializing the lot. One million keys is roughly
