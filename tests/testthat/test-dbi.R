@@ -229,6 +229,32 @@ test_that("max_dbs bounds how many can exist", {
   mdbx_env_close(env)
 })
 
+test_that("every named-database write names a read-only transaction", {
+  env <- multi_env()
+  mdbx_with_write(env, function(txn) mdbx_dbi_open(txn, "here", create = TRUE))
+
+  # mdbx_put() and mdbx_del() have always pre-empted libmdbx's bare EACCES for
+  # this. These three are writes too, and did not.
+  mdbx_with_read(env, function(txn) {
+    db <- mdbx_dbi_open(txn, "here")
+    readonly <- "this mdbx transaction is read-only"
+
+    expect_error(mdbx_dbi_drop(txn, db), readonly)
+    expect_error(mdbx_dbi_drop(txn, db, delete = TRUE), readonly)
+    expect_error(mdbx_dbi_sequence(txn, db, 1), readonly)
+
+    # And the create = TRUE refusal, which names the flag rather than the
+    # operation, because libmdbx checks it before looking the database up.
+    expect_error(mdbx_dbi_open(txn, "new", create = TRUE),
+                 "create = TRUE needs a write transaction")
+
+    # Nothing was done on the way out of any of them.
+    expect_identical(mdbx_dbi_list(txn), "here")
+  })
+
+  mdbx_env_close(env)
+})
+
 test_that("a handle cannot be used against a different environment", {
   one <- multi_env()
   two <- multi_env()
@@ -434,8 +460,14 @@ test_that("a database carries a sequence counter", {
   })
 
   mdbx_with_read(env, function(txn) {
-    expect_error(mdbx_dbi_sequence(txn, mdbx_dbi_open(txn, "ids"), 1), "mdbx error")
+    # Advancing the counter is a write; libmdbx would report a bare EACCES.
+    expect_error(mdbx_dbi_sequence(txn, mdbx_dbi_open(txn, "ids"), 1),
+                 "this mdbx transaction is read-only")
     expect_error(mdbx_dbi_sequence(txn, NULL, -1), "between 0 and")
+
+    # Reading it is not, and stays available.
+    expect_identical(mdbx_dbi_sequence(txn, mdbx_dbi_open(txn, "ids")), 12)
+    expect_identical(mdbx_dbi_sequence(txn, mdbx_dbi_open(txn, "ids"), 0), 12)
   })
 
   mdbx_env_close(env)

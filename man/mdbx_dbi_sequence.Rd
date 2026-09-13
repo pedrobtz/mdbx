@@ -8,7 +8,8 @@ mdbx_dbi_sequence(txn, db = NULL, increment = 0)
 }
 \arguments{
 \item{txn}{An \code{mdbx_txn} object from \code{\link[=mdbx_txn_begin]{mdbx_txn_begin()}}. Incrementing needs a
-write transaction; reading does not.}
+write transaction and is refused in a read one; reading the counter —
+\code{increment = 0} — works in either.}
 
 \item{db}{An \code{mdbx_dbi} object from \code{\link[=mdbx_dbi_open]{mdbx_dbi_open()}}, or \code{NULL} for the main
 database.}

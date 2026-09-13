@@ -7,7 +7,8 @@
 mdbx_dbi_drop(txn, db, delete = FALSE)
 }
 \arguments{
-\item{txn}{An \code{mdbx_txn} object from \code{\link[=mdbx_txn_begin]{mdbx_txn_begin()}}, opened for writing.}
+\item{txn}{An \code{mdbx_txn} object from \code{\link[=mdbx_txn_begin]{mdbx_txn_begin()}}, opened for writing.
+Both emptying and deleting are writes, so a read transaction is refused.}
 
 \item{db}{An \code{mdbx_dbi} object from \code{\link[=mdbx_dbi_open]{mdbx_dbi_open()}}, or \code{NULL} for the main
 database — which can be emptied but not deleted.}

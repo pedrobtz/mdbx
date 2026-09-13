@@ -1692,7 +1692,11 @@ void poison_sequence(void *data) {
 // Read, and optionally advance, a database's sequence counter.
 [[cpp11::register]]
 double mdbx_dbi_sequence_(cpp11::sexp txn, cpp11::strings db, double increment) {
-  mdbx_r::txn_handle *handle = mdbx_r::txn_from_sexp(txn);
+  // Reading the counter is a read; advancing it is a write, and only that
+  // half needs a write transaction. Checked before the read below rather than
+  // after it, so the refusal cannot arrive with the counter already touched.
+  mdbx_r::txn_handle *handle =
+      increment > 0 ? writable_txn(txn) : mdbx_r::txn_from_sexp(txn);
   ensure_dbi(handle, db);
 
   // Read before deciding, so the range check below happens while nothing has
@@ -1738,7 +1742,9 @@ double mdbx_dbi_sequence_(cpp11::sexp txn, cpp11::strings db, double increment) 
 // Empty a database, or delete it outright.
 [[cpp11::register]]
 void mdbx_dbi_drop_(cpp11::sexp txn, cpp11::strings db, bool del) {
-  mdbx_r::txn_handle *handle = mdbx_r::txn_from_sexp(txn);
+  // Emptying and deleting are both writes, and libmdbx reports a read
+  // transaction's refusal as a bare EACCES. mdbx_put() has always named it.
+  mdbx_r::txn_handle *handle = writable_txn(txn);
   ensure_dbi(handle, db);
 
   drop_context context = {handle, del, MDBX_SUCCESS};

@@ -88,6 +88,7 @@ mdbx_dbi_open <- function(txn, name, create = FALSE) {
 #' Like every other write, this takes effect only when the transaction commits.
 #'
 #' @param txn An `mdbx_txn` object from [mdbx_txn_begin()], opened for writing.
+#'   Both emptying and deleting are writes, so a read transaction is refused.
 #' @param db An `mdbx_dbi` object from [mdbx_dbi_open()], or `NULL` for the main
 #'   database — which can be emptied but not deleted.
 #' @param delete If `TRUE`, delete the database rather than just emptying it.
@@ -195,7 +196,8 @@ db_name <- function(db, txn) {
 #' Like every other write, an increment only stands if the transaction commits.
 #'
 #' @param txn An `mdbx_txn` object from [mdbx_txn_begin()]. Incrementing needs a
-#'   write transaction; reading does not.
+#'   write transaction and is refused in a read one; reading the counter —
+#'   `increment = 0` — works in either.
 #' @param db An `mdbx_dbi` object from [mdbx_dbi_open()], or `NULL` for the main
 #'   database.
 #' @param increment How many values to reserve. `0`, the default, reads the
