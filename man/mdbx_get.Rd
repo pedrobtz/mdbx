@@ -34,7 +34,8 @@ Looks up \code{key} in the transaction's snapshot.
 \details{
 A key that is not present returns \code{default} (\code{NULL} unless you say
 otherwise). That is unambiguous: a \emph{stored} zero-length value comes back as
-\code{raw(0)}, which is not \code{NULL}, so absence and emptiness stay distinguishable.
+\code{""} under the default decoding, or as \code{raw(0)} with \code{as = "raw"}. Neither
+is \code{NULL}, so absence and emptiness stay distinguishable either way.
 
 By default the stored bytes are decoded as UTF-8 text, so a value written as
 a string comes back as one. MDBX records no type, so this is an assumption

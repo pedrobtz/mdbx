@@ -143,3 +143,36 @@ test_that("mdbx_version reports how the amalgamation was built", {
   expect_true(nzchar(build$target))
   expect_true(nzchar(build$compiler))
 })
+
+test_that("the built-in methods refuse arguments they do not take", {
+  env <- multi_env()
+  db <- mdbx_with_write(env, function(txn) mdbx_dbi_open(txn, "named", create = TRUE))
+
+  # `db` is the one that mattered: a named database is resolved inside a
+  # transaction, so this question has no environment-wide answer -- and
+  # discarding the argument returned one anyway.
+  expect_error(mdbx_env_stat(env, db = db), "does not take `db`")
+  expect_error(mdbx_env_stat(env, junk = 1), "does not take `junk`")
+  expect_error(mdbx_env_info(env, junk = 1), "does not take `junk`")
+
+  # The environment method has no formal but `x`, so a positional argument
+  # lands in the dots rather than binding to something.
+  expect_error(mdbx_env_stat(env, 1), "does not take unnamed")
+
+  mdbx_with_read(env, function(txn) {
+    expect_error(mdbx_env_stat(txn, junk = 1), "does not take `junk`")
+    expect_error(mdbx_env_info(txn, junk = 1), "does not take `junk`")
+
+    # On the transaction method a lone positional binds to `db`, which
+    # validates it itself; a second one has nowhere to go but the dots.
+    expect_error(mdbx_env_stat(txn, 1), "must be an 'mdbx_dbi' object")
+    expect_error(mdbx_env_stat(txn, db, 1), "does not take unnamed")
+
+    # `db` is this method's own argument, so it still works.
+    expect_type(mdbx_env_stat(txn, db = db), "list")
+  })
+
+  expect_type(mdbx_env_stat(env), "list")
+  expect_type(mdbx_env_info(env), "list")
+  mdbx_env_close(env)
+})

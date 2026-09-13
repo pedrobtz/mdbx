@@ -17,11 +17,17 @@ A character vector of names, or a list of raw vectors if
 \code{as = "raw"}. Empty when the environment has only the main database.
 }
 \description{
-Reports the named databases visible to this transaction, which is not the
-same as the ones it could open: a database created by a transaction that has
-not committed is not listed, and one deleted but not yet committed still is.
+Reports the named databases visible to this transaction. Visibility is the
+transaction's own: a database this transaction created is listed
+immediately, and one it deleted is gone immediately, both before any commit.
+What other transactions see is decided when this one commits or aborts —
+until then they see neither the creation nor the deletion.
 }
 \details{
+That makes this the way to ask whether a database exists without handling an
+error, which is what \code{\link[=mdbx_dbi_open]{mdbx_dbi_open()}} raises for a name that was never
+created.
+
 Names are bytes, like keys, so a name that is not valid UTF-8 text needs
 \code{as = "raw"}. The unnamed main database is not listed, having no name.
 }

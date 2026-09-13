@@ -269,6 +269,43 @@ test_that("a database can be emptied or deleted", {
   mdbx_env_close(env)
 })
 
+test_that("a listing shows what this transaction did, before it commits", {
+  env <- multi_env()
+
+  # The documentation used to say the reverse of each of these.
+  mdbx_with_write(env, function(txn) {
+    mdbx_dbi_open(txn, "made", create = TRUE)
+    expect_identical(mdbx_dbi_list(txn), "made")
+  })
+
+  mdbx_with_write(env, function(txn) {
+    mdbx_dbi_drop(txn, mdbx_dbi_open(txn, "made"), delete = TRUE)
+    expect_identical(mdbx_dbi_list(txn), character(0))
+  })
+
+  # What other transactions see is settled by the commit or abort, not before
+  # it -- so an uncommitted creation is invisible outside its own transaction,
+  # and so is an uncommitted deletion.
+  txn <- mdbx_txn_begin(env, write = TRUE)
+  mdbx_dbi_open(txn, "pending", create = TRUE)
+  expect_identical(mdbx_dbi_list(txn), "pending")
+  mdbx_txn_abort(txn)
+
+  expect_identical(mdbx_with_read(env, function(txn) mdbx_dbi_list(txn)), character(0))
+
+  mdbx_with_write(env, function(txn) mdbx_dbi_open(txn, "kept", create = TRUE))
+
+  doomed <- mdbx_txn_begin(env, write = TRUE)
+  mdbx_dbi_drop(doomed, mdbx_dbi_open(doomed, "kept"), delete = TRUE)
+  expect_identical(mdbx_dbi_list(doomed), character(0))
+  mdbx_txn_abort(doomed)
+
+  # The abort put it back.
+  expect_identical(mdbx_with_read(env, function(txn) mdbx_dbi_list(txn)), "kept")
+
+  mdbx_env_close(env)
+})
+
 test_that("named databases are visible as keys of the main database", {
   # libmdbx stores them there, so this is the layout showing through rather
   # than a leak -- worth pinning down so it is not mistaken for a bug later.

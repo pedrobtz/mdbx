@@ -40,6 +40,17 @@ test_that("a stored zero-length value is distinguishable from absence", {
     expect_identical(value, raw(0))
     expect_null(mdbx_get(txn, charToRaw("never-written"), as = "raw"))
   })
+
+  # And under the default decoding, where it is "" rather than raw(0) -- the
+  # documentation named only the raw form. Both are distinguishable from
+  # absence, which is what the contract actually rests on.
+  mdbx_with_read(env, function(txn) {
+    value <- mdbx_get(txn, charToRaw("empty"))
+
+    expect_identical(value, "")
+    expect_false(is.null(value))
+    expect_null(mdbx_get(txn, charToRaw("never-written")))
+  })
 })
 
 test_that("put replaces by default and refuses when overwrite is FALSE", {

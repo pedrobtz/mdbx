@@ -115,9 +115,15 @@ mdbx_dbi_drop <- function(txn, db, delete = FALSE) {
 
 #' List the named databases in an environment
 #'
-#' Reports the named databases visible to this transaction, which is not the
-#' same as the ones it could open: a database created by a transaction that has
-#' not committed is not listed, and one deleted but not yet committed still is.
+#' Reports the named databases visible to this transaction. Visibility is the
+#' transaction's own: a database this transaction created is listed
+#' immediately, and one it deleted is gone immediately, both before any commit.
+#' What other transactions see is decided when this one commits or aborts —
+#' until then they see neither the creation nor the deletion.
+#'
+#' That makes this the way to ask whether a database exists without handling an
+#' error, which is what [mdbx_dbi_open()] raises for a name that was never
+#' created.
 #'
 #' Names are bytes, like keys, so a name that is not valid UTF-8 text needs
 #' `as = "raw"`. The unnamed main database is not listed, having no name.
