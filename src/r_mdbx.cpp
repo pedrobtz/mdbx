@@ -1,6 +1,8 @@
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <thread>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 #include <memory>
@@ -129,9 +131,102 @@ env_handle *find_open_env(const std::string &key) {
 
 } // namespace
 
+namespace {
+
+// The MDBX status codes that have a symbolic name, and it.
+//
+// mdbx_strerror() already prefixes its own statuses with the name, but only
+// inside the message -- and libmdbx passes system errno values through
+// untouched, which have no MDBX name at all. The table is what lets a
+// condition carry the name as a field instead, so that handling MDBX_BUSY does
+// not mean matching English text.
+struct error_entry {
+  const char *name;
+  int code;
+};
+
+const error_entry error_table[] = {
+    {"MDBX_KEYEXIST", MDBX_KEYEXIST},
+    {"MDBX_NOTFOUND", MDBX_NOTFOUND},
+    {"MDBX_CORRUPTED", MDBX_CORRUPTED},
+    {"MDBX_PANIC", MDBX_PANIC},
+    {"MDBX_VERSION_MISMATCH", MDBX_VERSION_MISMATCH},
+    {"MDBX_INVALID", MDBX_INVALID},
+    {"MDBX_MAP_FULL", MDBX_MAP_FULL},
+    {"MDBX_DBS_FULL", MDBX_DBS_FULL},
+    {"MDBX_READERS_FULL", MDBX_READERS_FULL},
+    {"MDBX_TXN_FULL", MDBX_TXN_FULL},
+    {"MDBX_PAGE_FULL", MDBX_PAGE_FULL},
+    {"MDBX_UNABLE_EXTEND_MAPSIZE", MDBX_UNABLE_EXTEND_MAPSIZE},
+    {"MDBX_INCOMPATIBLE", MDBX_INCOMPATIBLE},
+    {"MDBX_BAD_RSLOT", MDBX_BAD_RSLOT},
+    {"MDBX_BAD_TXN", MDBX_BAD_TXN},
+    {"MDBX_BAD_VALSIZE", MDBX_BAD_VALSIZE},
+    {"MDBX_BAD_DBI", MDBX_BAD_DBI},
+    {"MDBX_PROBLEM", MDBX_PROBLEM},
+    {"MDBX_BUSY", MDBX_BUSY},
+    {"MDBX_EBADSIGN", MDBX_EBADSIGN},
+    {"MDBX_WANNA_RECOVERY", MDBX_WANNA_RECOVERY},
+    {"MDBX_EKEYMISMATCH", MDBX_EKEYMISMATCH},
+    {"MDBX_TOO_LARGE", MDBX_TOO_LARGE},
+    {"MDBX_THREAD_MISMATCH", MDBX_THREAD_MISMATCH},
+    {"MDBX_TXN_OVERLAPPING", MDBX_TXN_OVERLAPPING},
+    {"MDBX_DANGLING_DBI", MDBX_DANGLING_DBI},
+};
+
+const char *error_name(int rc) {
+  for (const auto &entry : error_table) {
+    if (entry.code == rc)
+      return entry.name;
+  }
+  return nullptr;
+}
+
+// "MDBX_BUSY" -> "mdbx_busy", the condition's most specific class.
+std::string subclass_of(const char *name) {
+  std::string out(name);
+  for (char &c : out)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return out;
+}
+
+} // namespace
+
 void check(int rc) {
-  if (rc != MDBX_SUCCESS)
-    cpp11::stop("%s (mdbx error %d)", mdbx_strerror(rc), rc);
+  if (rc == MDBX_SUCCESS)
+    return;
+
+  using namespace cpp11::literals;
+
+  const char *name = error_name(rc);
+
+  // The message is unchanged: it is what a user reads, and the tests and the
+  // documentation both quote it. The code and the name are additions.
+  char message[512];
+  std::snprintf(message, sizeof(message), "%s (mdbx error %d)",
+                mdbx_strerror(rc), rc);
+
+  cpp11::writable::list condition(
+      {"message"_nm = std::string(message), "call"_nm = cpp11::sexp(R_NilValue),
+       "code"_nm = rc,
+       "name"_nm = name ? cpp11::writable::strings({std::string(name)})
+                        : cpp11::writable::strings({NA_STRING})});
+
+  cpp11::writable::strings classes;
+  if (name != nullptr)
+    classes.push_back(subclass_of(name));
+  classes.push_back("mdbx_error");
+  classes.push_back("error");
+  classes.push_back("condition");
+  condition.attr("class") = classes;
+
+  // Signalled through base::stop() rather than Rf_error(), so the structured
+  // fields survive: cpp11::stop() formats a string and loses them. cpp11
+  // routes the call through R_UnwindProtect, so the R jump resumes at the
+  // .Call() boundary with C++ destructors run.
+  cpp11::package("base")["stop"](condition);
+
+  cpp11::stop("%s", message); // not reached; base::stop() does not return
 }
 
 void guard(mdbx_r_guarded_function call, void *data,
@@ -1843,41 +1938,10 @@ void mdbx_test_check_(int rc) { mdbx_r::check(rc); }
 // itself defines them -- no numeric literals in the test.
 [[cpp11::register]]
 cpp11::integers mdbx_test_error_codes_() {
-  using namespace cpp11::literals;
-
   cpp11::writable::integers out;
   cpp11::writable::strings names;
 
-  const struct { const char *name; int code; } table[] = {
-      {"MDBX_KEYEXIST", MDBX_KEYEXIST},
-      {"MDBX_NOTFOUND", MDBX_NOTFOUND},
-      {"MDBX_CORRUPTED", MDBX_CORRUPTED},
-      {"MDBX_PANIC", MDBX_PANIC},
-      {"MDBX_VERSION_MISMATCH", MDBX_VERSION_MISMATCH},
-      {"MDBX_INVALID", MDBX_INVALID},
-      {"MDBX_MAP_FULL", MDBX_MAP_FULL},
-      {"MDBX_DBS_FULL", MDBX_DBS_FULL},
-      {"MDBX_READERS_FULL", MDBX_READERS_FULL},
-      {"MDBX_TXN_FULL", MDBX_TXN_FULL},
-      {"MDBX_PAGE_FULL", MDBX_PAGE_FULL},
-      {"MDBX_UNABLE_EXTEND_MAPSIZE", MDBX_UNABLE_EXTEND_MAPSIZE},
-      {"MDBX_INCOMPATIBLE", MDBX_INCOMPATIBLE},
-      {"MDBX_BAD_RSLOT", MDBX_BAD_RSLOT},
-      {"MDBX_BAD_TXN", MDBX_BAD_TXN},
-      {"MDBX_BAD_VALSIZE", MDBX_BAD_VALSIZE},
-      {"MDBX_BAD_DBI", MDBX_BAD_DBI},
-      {"MDBX_PROBLEM", MDBX_PROBLEM},
-      {"MDBX_BUSY", MDBX_BUSY},
-      {"MDBX_EBADSIGN", MDBX_EBADSIGN},
-      {"MDBX_WANNA_RECOVERY", MDBX_WANNA_RECOVERY},
-      {"MDBX_EKEYMISMATCH", MDBX_EKEYMISMATCH},
-      {"MDBX_TOO_LARGE", MDBX_TOO_LARGE},
-      {"MDBX_THREAD_MISMATCH", MDBX_THREAD_MISMATCH},
-      {"MDBX_TXN_OVERLAPPING", MDBX_TXN_OVERLAPPING},
-      {"MDBX_DANGLING_DBI", MDBX_DANGLING_DBI},
-  };
-
-  for (const auto &entry : table) {
+  for (const auto &entry : mdbx_r::error_table) {
     out.push_back(entry.code);
     names.push_back(entry.name);
   }
