@@ -58,7 +58,8 @@ reopening it needs <code>create = TRUE</code> again.</p>
 
 
 <dl><dt id="arg-txn">txn<a class="anchor" aria-label="anchor" href="#arg-txn"></a></dt>
-<dd><p>An <code>mdbx_txn</code> object from <code><a href="mdbx_txn_begin.html">mdbx_txn_begin()</a></code>, opened for writing.</p></dd>
+<dd><p>An <code>mdbx_txn</code> object from <code><a href="mdbx_txn_begin.html">mdbx_txn_begin()</a></code>, opened for writing.
+Both emptying and deleting are writes, so a read transaction is refused.</p></dd>
 
 
 <dt id="arg-db">db<a class="anchor" aria-label="anchor" href="#arg-db"></a></dt>
@@ -76,7 +77,14 @@ database — which can be emptied but not deleted.</p></dd>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
-    <p>Like every other write, this takes effect only when the transaction commits.</p>
+    <p>Emptying a database that holds records also resets its
+<a href="mdbx_dbi_sequence.html">sequence counter</a> to zero, because 'libmdbx' rewrites
+the database's record and the counter lives in it. (Emptying one that is
+already empty rewrites nothing and leaves the counter alone, but that is not
+a distinction to build on.) Do not rely on ids minted before an emptying
+staying unique afterwards — if they are still referenced somewhere, remove
+the records by deleting their keys instead.</p>
+<p>Like every other write, this takes effect only when the transaction commits.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>

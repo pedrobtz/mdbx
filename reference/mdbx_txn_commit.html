@@ -75,7 +75,8 @@ operation failing, and the transaction carries on. A failure that exhausts
 the map (<code>MDBX_MAP_FULL</code>) instead marks the transaction unusable: every later
 operation fails with <code>MDBX_BAD_TXN</code>, and the commit reports that the whole
 transaction was rolled back rather than committed. <code><a href="mdbx_txn_state.html">mdbx_txn_state()</a></code> reads
-<code>"aborted"</code> in that case.</p>
+<code>"failed"</code> from the moment that happens, and <code>"aborted"</code> once the rollback
+has ended it.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>

@@ -17,7 +17,8 @@ mdbx_dbi_sequence(txn, db = NULL, increment = 0)
 
   An `mdbx_txn` object from
   [`mdbx_txn_begin()`](https://pedrobtz.github.io/mdbx/reference/mdbx_txn_begin.md).
-  Incrementing needs a write transaction; reading does not.
+  Incrementing needs a write transaction and is refused in a read one;
+  reading the counter — `increment = 0` — works in either.
 
 - db:
 
@@ -42,7 +43,9 @@ Encode the result big-endian if it is going to be a key, so that byte
 order matches numeric order.
 
 Like every other write, an increment only stands if the transaction
-commits.
+commits. Emptying or deleting the database can reset the counter to zero
+— see
+[`mdbx_dbi_drop()`](https://pedrobtz.github.io/mdbx/reference/mdbx_dbi_drop.md).
 
 ## See also
 

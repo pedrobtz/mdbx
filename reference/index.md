@@ -97,5 +97,7 @@ Every commit is durable by default; these trade that for speed.
   : mdbx: Bindings to the 'libmdbx' Embedded Key-Value Store
 - [`mdbx-concurrency`](https://pedrobtz.github.io/mdbx/reference/mdbx-concurrency.md)
   : Concurrency in mdbx
+- [`mdbx-errors`](https://pedrobtz.github.io/mdbx/reference/mdbx-errors.md)
+  : Errors raised by mdbx
 - [`mdbx_version()`](https://pedrobtz.github.io/mdbx/reference/mdbx_version.md)
   : Version of the bundled libmdbx

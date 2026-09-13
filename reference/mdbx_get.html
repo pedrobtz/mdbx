@@ -87,7 +87,8 @@ address instead of the unnamed main one, or <code>NULL</code> for the main datab
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
     <p>A key that is not present returns <code>default</code> (<code>NULL</code> unless you say
 otherwise). That is unambiguous: a <em>stored</em> zero-length value comes back as
-<code>raw(0)</code>, which is not <code>NULL</code>, so absence and emptiness stay distinguishable.</p>
+<code>""</code> under the default decoding, or as <code>raw(0)</code> with <code>as = "raw"</code>. Neither
+is <code>NULL</code>, so absence and emptiness stay distinguishable either way.</p>
 <p>By default the stored bytes are decoded as UTF-8 text, so a value written as
 a string comes back as one. MDBX records no type, so this is an assumption
 rather than something the database knows: <strong>pass <code>as = "raw"</code> for any value

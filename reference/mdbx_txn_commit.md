@@ -39,7 +39,8 @@ the transaction carries on. A failure that exhausts the map
 operation fails with `MDBX_BAD_TXN`, and the commit reports that the
 whole transaction was rolled back rather than committed.
 [`mdbx_txn_state()`](https://pedrobtz.github.io/mdbx/reference/mdbx_txn_state.md)
-reads `"aborted"` in that case.
+reads `"failed"` from the moment that happens, and `"aborted"` once the
+rollback has ended it.
 
 ## See also
 
