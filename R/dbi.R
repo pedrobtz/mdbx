@@ -76,7 +76,11 @@ mdbx_dbi_open <- function(txn, name, create = FALSE) {
 
   mdbx_dbi_open_(txn, name, create)
 
-  structure(list(name = name, path = attr(txn, "path")), class = "mdbx_dbi")
+  # `token` is what identifies the environment; `path` is carried only so a
+  # refusal can name it. See db_name().
+  structure(list(name = name, path = attr(txn, "path"),
+                 token = attr(txn, "token")),
+            class = "mdbx_dbi")
 }
 
 #' Empty or delete a named database
@@ -84,6 +88,10 @@ mdbx_dbi_open <- function(txn, name, create = FALSE) {
 #' `delete = FALSE` removes every record but keeps the database. `delete = TRUE`
 #' removes the database itself, after which the handle refers to nothing and
 #' reopening it needs `create = TRUE` again.
+#'
+#' The main database is the exception: it is what records the named ones, so it
+#' can be emptied but not deleted, and `db = NULL` with `delete = TRUE` is an
+#' error rather than a quiet emptying.
 #'
 #' Emptying a database that holds records also resets its
 #' [sequence counter][mdbx_dbi_sequence] to zero, because 'libmdbx' rewrites
@@ -173,6 +181,13 @@ print.mdbx_dbi <- function(x, ...) {
 # so that using one elsewhere is caught rather than silently addressing a
 # same-named database in another environment.
 #
+# What they carry for that is the environment's `token`, not its path. A path
+# names a place, and an environment can be closed, deleted and another created
+# in the same place -- after which a handle from the first would have gone on
+# reading and writing the same-named database in its replacement, which has
+# nothing to do with it. The token names the open, so the two do not compare
+# equal. The path is kept alongside it only so the refusal can say where.
+#
 # The contents are checked, not just the class. An mdbx_dbi is an ordinary
 # mutable list, so `db$name <- character(0)` is something R code can do -- and
 # character(0) is exactly how the native layer spells "the main database". A
@@ -190,20 +205,36 @@ db_name <- function(db, txn) {
 
   name <- db$name
   path <- db$path
+  token <- db$token
 
-  if (!is_single_string(name) || !is_single_string(path)) {
+  if (!is_single_string(name) || !is_single_string(path) ||
+      !is_single_string(token)) {
     stop(paste0(
-      "`db` is not a valid 'mdbx_dbi' object: its `name` and `path` must each ",
-      "be a single non-empty string. Use mdbx_dbi_open() to obtain one, or ",
-      "NULL for the main database"
+      "`db` is not a valid 'mdbx_dbi' object: its `name`, `path` and `token` ",
+      "must each be a single non-empty string. Use mdbx_dbi_open() to obtain ",
+      "one, or NULL for the main database"
     ), call. = FALSE)
   }
 
-  if (!identical(path, attr(txn, "path"))) {
-    stop(sprintf(
-      "this database handle belongs to the environment at '%s', not '%s'",
-      path, attr(txn, "path")
-    ), call. = FALSE)
+  if (!identical(token, attr(txn, "token"))) {
+    # Same path, different token: the environment it was opened in has been
+    # closed and another opened in its place. Naming the path twice would read
+    # as a mistake, so say what actually happened.
+    stop(
+      if (identical(path, attr(txn, "path"))) {
+        sprintf(paste0(
+          "this database handle belongs to an environment at '%s' that has ",
+          "since been closed; the one open there now is a different ",
+          "environment. Open the database again in this transaction"
+        ), path)
+      } else {
+        sprintf(
+          "this database handle belongs to the environment at '%s', not '%s'",
+          path, attr(txn, "path")
+        )
+      },
+      call. = FALSE
+    )
   }
 
   name

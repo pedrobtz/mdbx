@@ -157,6 +157,49 @@ use-after-close bugs is unreachable: handles are released when the environment c
 The cost is that a DBI slot stays used until the environment closes, bounded by `max_dbs` — which
 is already an `mdbx_env_open()` argument, and until now had nothing to spend itself on.
 
+### Identifying an environment — **settled in the package review**
+
+**By its data file's identity — `(device, inode)` on POSIX, `(volume, file index)` on Windows —
+not by any spelling of its path.**
+
+An environment may be open at most once per process (see *The concurrency contract*), and the
+registry that enforces that is keyed by this. The key matters more than it looks: a second open of
+one environment does not fail, it *hangs*. libmdbx coordinates through a lock file named after the
+path, so a second name for one data file gets a second lock file, and then blocks on a lock this
+same single-threaded process is the one holding and can never reach the call that would release.
+
+Canonicalising the path was the first answer and is not sufficient. `normalizePath()` resolves
+`.`, `..` and symlinks, but a hard link is not a spelling of another path — it is an equal name for
+one inode, and no string transformation relates the two. Keying by identity subsumes symlink
+resolution for free, and costs one `stat()` per open.
+
+Identity is not knowable before the file exists, which `create = TRUE` routinely means. So the
+registry check uses the canonical spelling as a fallback key — prefixed apart so it cannot compare
+equal to an identity — and the environment is re-keyed from its data file once the open has made
+one. The fallback cannot hide a collision: every environment in the registry has been opened, so
+its data file is on disk and its key is an identity.
+
+`R/env.R`'s `env_key()` therefore settles only *which file* a path names — the `mdbx.dat` inside a
+directory-layout environment, or the path itself — and `env_key_for()` in `src/r_mdbx.cpp` turns
+that into the key.
+
+### Recognising an environment across its own replacement — **settled in the package review**
+
+**An opaque per-open token, carried on the environment, copied to its transactions, and recorded
+in every `mdbx_dbi`.**
+
+Because a database handle is a name re-resolved per transaction (above), something has to stop one
+being used against an environment it did not come from — otherwise it silently addresses a
+same-named database somewhere else. The path was the first answer, and it is wrong in one case: an
+environment can be closed, its files deleted, and another created at the same path. The handle
+then matched, and went on reading and writing in a replacement it has nothing to do with.
+
+A path names a place; the token names an *open*. It is a process-local counter, which is enough:
+handles do not survive `fork()` and are never serialised, so it only has to be unique among the
+opens of one process. The path stays on the handle alongside it, so a refusal can still say where —
+and when the paths are equal, the refusal says that the environment was closed and replaced rather
+than naming one path twice.
+
 ### Environment resizing
 
 MDBX has mechanisms related to map sizing and geometry.

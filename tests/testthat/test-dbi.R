@@ -271,6 +271,39 @@ test_that("a handle cannot be used against a different environment", {
   mdbx_env_close(two)
 })
 
+test_that("a handle cannot be used against a replacement at the same path", {
+  # The path is the same, so only the token tells the two environments apart.
+  # Without it the old handle went on addressing the same-named database in an
+  # environment it has nothing to do with, and said nothing about it.
+  path <- env_path()
+
+  first <- mdbx_env_open(path, max_dbs = 8, map_size = test_map_size)
+  handle <- mdbx_with_write(first, function(txn) {
+    db <- mdbx_dbi_open(txn, "shared", create = TRUE)
+    mdbx_put(txn, "k", "first", db = db)
+    db
+  })
+  mdbx_env_close(first)
+  unlink(c(path, paste0(path, "-lck")))
+
+  second <- mdbx_env_open(path, max_dbs = 8, map_size = test_map_size)
+  on.exit(mdbx_env_close(second), add = TRUE)
+  mdbx_with_write(second, function(txn) {
+    mdbx_put(txn, "k", "second", db = mdbx_dbi_open(txn, "shared", create = TRUE))
+  })
+
+  mdbx_with_read(second, function(txn) {
+    # Naming the one path twice would read as a mistake, so this refusal says
+    # what happened instead.
+    expect_error(mdbx_get(txn, "k", db = handle), "has since been closed")
+    expect_error(mdbx_put(txn, "k", "v", db = handle), "has since been closed")
+
+    # And a handle opened here is fine, so the check has not simply broken the
+    # path it is guarding.
+    expect_identical(mdbx_get(txn, "k", db = mdbx_dbi_open(txn, "shared")), "second")
+  })
+})
+
 test_that("a database can be emptied or deleted", {
   env <- multi_env()
 
@@ -290,6 +323,38 @@ test_that("a database can be emptied or deleted", {
 
   mdbx_with_read(env, function(txn) {
     expect_error(mdbx_dbi_open(txn, "scratch"), "named database 'scratch' does not exist")
+  })
+
+  mdbx_env_close(env)
+})
+
+test_that("the main database can be emptied but not deleted", {
+  env <- multi_env()
+
+  mdbx_with_write(env, function(txn) {
+    mdbx_put(txn, "k", "v")
+    mdbx_dbi_open(txn, "named", create = TRUE)
+  })
+
+  # libmdbx accepts this and quietly does something else: mdbx_drop() empties
+  # the table, then returns success without ever consulting `del` for a core
+  # DBI. The caller would be told the deletion happened.
+  mdbx_with_write(env, function(txn) {
+    expect_error(mdbx_dbi_drop(txn, NULL, delete = TRUE), "cannot be deleted")
+  })
+
+  # Refused before anything was emptied, so the refusal cost nothing.
+  mdbx_with_read(env, function(txn) {
+    expect_identical(mdbx_get(txn, "k"), "v")
+    expect_identical(mdbx_dbi_list(txn), "named")
+  })
+
+  # delete = FALSE still does what libmdbx would have done either way. It takes
+  # the named databases with it: their entries are records of the main one.
+  mdbx_with_write(env, function(txn) mdbx_dbi_drop(txn, NULL))
+  mdbx_with_read(env, function(txn) {
+    expect_null(mdbx_get(txn, "k"))
+    expect_identical(mdbx_dbi_list(txn), character(0))
   })
 
   mdbx_env_close(env)
@@ -379,13 +444,12 @@ test_that("a damaged db handle is refused, not redirected", {
   # layer spells "the main database". A handle whose name became character(0)
   # therefore used to answer from the main database rather than be refused --
   # silently changing which database the call addressed.
-  broken_names <- list(character(0), "", NA_character_, c("a", "b"), NULL, 42)
-  broken_paths <- list(character(0), "", NA_character_, c("a", "b"), NULL, 42)
+  broken <- list(character(0), "", NA_character_, c("a", "b"), NULL, 42)
 
   mdbx_with_read(env, function(txn) {
     good <- mdbx_dbi_open(txn, "named")
 
-    for (value in broken_names) {
+    for (value in broken) {
       db <- good
       db$name <- value
       expect_error(mdbx_get(txn, "k", db = db), "not a valid 'mdbx_dbi'")
@@ -393,10 +457,14 @@ test_that("a damaged db handle is refused, not redirected", {
       expect_error(mdbx_env_stat(txn, db = db), "not a valid 'mdbx_dbi'")
     }
 
-    for (value in broken_paths) {
-      db <- good
-      db$path <- value
-      expect_error(mdbx_get(txn, "k", db = db), "not a valid 'mdbx_dbi'")
+    # The other two fields are what identify the environment, and a damaged one
+    # must be refused rather than fall through to a comparison it cannot fail.
+    for (field in c("path", "token")) {
+      for (value in broken) {
+        db <- good
+        db[[field]] <- value
+        expect_error(mdbx_get(txn, "k", db = db), "not a valid 'mdbx_dbi'")
+      }
     }
 
     # Fabricated rather than damaged, and the atomic case that cannot even be

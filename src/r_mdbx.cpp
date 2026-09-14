@@ -13,6 +13,7 @@
 #ifdef _WIN32
 #include <process.h>
 #else
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -105,17 +106,12 @@ void unregister_env(env_handle *handle) {
                   open_envs.end());
 }
 
-// The open handle keyed by `key`, or null.
+// The open handle keyed by `key`, or null. See env_key_for() for what makes
+// two spellings of one environment arrive here as the same key.
 //
 // Entries inherited across a fork() are skipped: the vector is copied into the
 // child along with everything else, but the environments it names belong to
 // the parent, and the child is entitled to open them itself.
-//
-// Keys are compared as strings, which is why env_key() in R/env.R canonicalises
-// them first: it resolves the directory, `.` and `..` and any symlink among
-// them, and names a directory-layout environment by its data file, so that the
-// spellings of one environment arrive here identical. What it cannot resolve is
-// a path whose own directory does not exist, and no environment can live there.
 env_handle *find_open_env(const std::string &key) {
   for (env_handle *handle : open_envs) {
     if (handle->key == key && handle->pid == current_pid())
@@ -123,6 +119,100 @@ env_handle *find_open_env(const std::string &key) {
   }
   return nullptr;
 }
+
+// The file's identity as the filesystem knows it, or false if it has none --
+// which for our purposes means it does not exist.
+#ifdef _WIN32
+bool file_identity(const std::string &path, std::string &out) {
+  // R hands paths over as UTF-8, which the ...A entry points would read in the
+  // active code page instead.
+  const int wide_size =
+      MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+  if (wide_size <= 0)
+    return false;
+
+  std::vector<wchar_t> wide(static_cast<size_t>(wide_size));
+  if (MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wide.data(),
+                          wide_size) <= 0)
+    return false;
+
+  // No access is requested: the metadata below needs a handle, not a readable
+  // file, and asking for nothing cannot disturb the open libmdbx already holds
+  // on an incumbent environment. BACKUP_SEMANTICS lets the same call answer for
+  // a directory, which a misspelled single-file path can name.
+  HANDLE file = CreateFileW(
+      wide.data(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (file == INVALID_HANDLE_VALUE)
+    return false;
+
+  BY_HANDLE_FILE_INFORMATION info;
+  const BOOL ok = GetFileInformationByHandle(file, &info);
+  CloseHandle(file);
+  if (!ok)
+    return false;
+
+  char buffer[80];
+  std::snprintf(buffer, sizeof buffer, "id:%lu:%lu:%lu",
+                static_cast<unsigned long>(info.dwVolumeSerialNumber),
+                static_cast<unsigned long>(info.nFileIndexHigh),
+                static_cast<unsigned long>(info.nFileIndexLow));
+  out = buffer;
+  return true;
+}
+#else
+bool file_identity(const std::string &path, std::string &out) {
+  struct stat info;
+  if (stat(path.c_str(), &info) != 0)
+    return false;
+
+  char buffer[80];
+  std::snprintf(buffer, sizeof buffer, "id:%ju:%ju",
+                static_cast<uintmax_t>(info.st_dev),
+                static_cast<uintmax_t>(info.st_ino));
+  out = buffer;
+  return true;
+}
+#endif
+
+} // namespace
+
+// How an environment is known to the open registry, given the spelling of its
+// data file that env_key() in R/env.R worked out.
+//
+// Two names for one environment have to land on the same key, because opening
+// an environment twice in a process does not fail -- it hangs. libmdbx
+// coordinates through a lock file named after the path, so a second name gets a
+// second lock file and then blocks on a lock the first open holds, in this same
+// single-threaded process, which therefore can never reach the call that would
+// release it.
+//
+// Canonicalising the spelling is not enough for that. normalizePath() resolves
+// `.`, `..` and symlinks, but a hard link is not a spelling of another path: it
+// is an equal name for one inode, and no amount of string work relates the two.
+// So the key is the file's identity where the filesystem can supply it --
+// (device, inode) on POSIX, (volume, file index) on Windows -- and the
+// canonical spelling only where it cannot, which is a data file that does not
+// exist yet.
+//
+// That fallback cannot hide a collision. Every environment in the registry has
+// been opened, so its data file is on disk and its key is an identity; a
+// spelling that resolves to nothing names no environment anyone could already
+// have open. The two kinds of key are prefixed apart so they cannot compare
+// equal by accident.
+//
+// Identity is not knowable before the file exists, so an environment created by
+// its own open is keyed from the spelling for the registry check and re-keyed
+// from the file once the open has made one. The key is compared, never shown --
+// the refusal prints the paths the caller and the incumbent wrote.
+std::string env_key_for(const std::string &spelling) {
+  std::string key;
+  if (file_identity(spelling, key))
+    return key;
+  return "path:" + spelling;
+}
+
+namespace {
 
 [[noreturn]] void stop_after_panic(const mdbx_r_panic_info &panic) {
   cpp11::stop("libmdbx assertion failed: %s (%s:%u)", panic.message,
@@ -773,6 +863,25 @@ void finalize_txn(SEXP ptr) {
   --live_txn_handles;
 }
 
+// A name for this particular open, distinct from every other open this process
+// makes. It travels env -> txn -> mdbx_dbi, so that a database handle can be
+// matched against the environment it was opened in.
+//
+// The path cannot do that job. An environment can be closed, its files deleted
+// and another created at the same path, and a database handle from before that
+// must not go on addressing the same-named database in the replacement -- they
+// have nothing to do with each other. A counter is enough to tell them apart:
+// handles do not survive fork() and are never serialised, so the token only has
+// to be unique among the opens of one process.
+std::string next_env_token() {
+  static uint64_t counter = 0;
+
+  char buffer[32];
+  std::snprintf(buffer, sizeof buffer, "%llu",
+                static_cast<unsigned long long>(++counter));
+  return buffer;
+}
+
 // Build the R object: an external pointer carrying the MDBX handle, classed
 // `mdbx_env`, with the opening parameters attached as attributes.
 //
@@ -791,6 +900,8 @@ cpp11::sexp new_env_sexp(env_handle *handle, const std::string &path,
   Rf_setAttrib(ptr, Rf_install("path"), Rf_mkString(path.c_str()));
   Rf_setAttrib(ptr, Rf_install("readonly"), Rf_ScalarLogical(readonly));
   Rf_setAttrib(ptr, Rf_install("subdir"), Rf_ScalarLogical(subdir));
+  Rf_setAttrib(ptr, Rf_install("token"),
+               Rf_mkString(next_env_token().c_str()));
   Rf_classgets(ptr, Rf_mkString("mdbx_env"));
 
   UNPROTECT(1);
@@ -815,10 +926,13 @@ cpp11::sexp new_txn_sexp(std::unique_ptr<txn_handle> handle, SEXP env_sexp,
   raw->owner->live_txns.push_back(raw);
 
   Rf_setAttrib(ptr, Rf_install("write"), Rf_ScalarLogical(write));
-  // Copied from the environment so print() can name it without reaching into
-  // the protected field, which R code cannot read.
+  // Both copied from the environment so R code can reach them without the
+  // protected field, which it cannot read: the path so print() can name the
+  // environment, the token so db_name() can recognise it.
   Rf_setAttrib(ptr, Rf_install("path"),
                Rf_getAttrib(env_sexp, Rf_install("path")));
+  Rf_setAttrib(ptr, Rf_install("token"),
+               Rf_getAttrib(env_sexp, Rf_install("token")));
   Rf_classgets(ptr, Rf_mkString("mdbx_txn"));
 
   UNPROTECT(1);
@@ -938,7 +1052,7 @@ cpp11::list mdbx_version_() {
 // receives normalized values, where a non-positive max_dbs or map_size means
 // "leave the MDBX default alone".
 [[cpp11::register]]
-cpp11::sexp mdbx_env_open_(std::string path, std::string key, bool readonly,
+cpp11::sexp mdbx_env_open_(std::string path, std::string spelling, bool readonly,
                            bool subdir, double max_dbs, double map_size,
                            double max_readers, int mode,
                            cpp11::strings extra_flags) {
@@ -967,7 +1081,8 @@ cpp11::sexp mdbx_env_open_(std::string path, std::string key, bool readonly,
   // The incumbent's own spelling goes in the message when it differs from the
   // one being refused: the caller matched it on the canonical key, so without
   // it they are told that a path they did not write is already open.
-  if (mdbx_r::env_handle *incumbent = mdbx_r::find_open_env(key)) {
+  if (mdbx_r::env_handle *incumbent =
+          mdbx_r::find_open_env(mdbx_r::env_key_for(spelling))) {
     if (incumbent->path == path)
       cpp11::stop("mdbx environment '%s' is already open in this process; use "
                   "the existing handle, or close it before opening it again",
@@ -1019,7 +1134,10 @@ cpp11::sexp mdbx_env_open_(std::string path, std::string key, bool readonly,
   // directory, and print.mdbx_env() said "single file" for it.
   const bool actual_subdir = (context.actual_flags & MDBX_NOSUBDIR) == 0;
 
-  handle->key = key;
+  // Re-keyed now rather than reusing the key the check above was made with: an
+  // environment this call created had no identity to be keyed by until the open
+  // put its data file on disk.
+  handle->key = mdbx_r::env_key_for(spelling);
   handle->path = path;
 
   // Registered only once the external pointer exists, so that a failure to
@@ -1808,15 +1926,31 @@ double mdbx_dbi_sequence_(cpp11::sexp txn, cpp11::strings db, double increment) 
   mdbx_r::guard(sequence_call, &context, poison_sequence);
   mdbx_r::check(context.rc);
 
+  // The counter is 64-bit in libmdbx but reaches R as a double, which holds
+  // integers exactly only up to 2^53. Checked against the native value, before
+  // the conversion that would round it: this binding will not advance a counter
+  // past that bound, but another one sharing the database is under no such
+  // rule, and a counter it left up there must not be reported as a number that
+  // merely looks like it.
+  if (context.result > static_cast<uint64_t>(mdbx_r::max_exact_integer)) {
+    char exact[32];
+    std::snprintf(exact, sizeof exact, "%llu",
+                  static_cast<unsigned long long>(context.result));
+    cpp11::stop("this sequence stands at %s, past 2^53 -- the largest integer "
+                "R's numeric type holds exactly -- so it cannot be reported "
+                "without rounding. Something other than this package advanced "
+                "it there",
+                exact);
+  }
+
   const double current = static_cast<double>(context.result);
 
   if (increment <= 0)
     return current;
 
-  // The counter is 64-bit in libmdbx but reaches R as a double, which stops
-  // holding consecutive integers past 2^53 -- two successive increments there
-  // return the same number. A sequence documented as unique must refuse to
-  // continue rather than hand out duplicates.
+  // Two successive increments past 2^53 return the same number, and a sequence
+  // documented as unique must refuse to continue rather than hand out
+  // duplicates.
   if (!(increment <= mdbx_r::max_exact_integer) ||
       current > mdbx_r::max_exact_integer - increment)
     cpp11::stop("this sequence stands at %.0f, and reserving %.0f more would "
@@ -1847,6 +1981,18 @@ void mdbx_dbi_drop_(cpp11::sexp txn, cpp11::strings db, bool del) {
   // Emptying and deleting are both writes, and libmdbx reports a read
   // transaction's refusal as a bare EACCES. mdbx_put() has always named it.
   mdbx_r::txn_handle *handle = writable_txn(txn);
+
+  // The main database cannot be deleted -- it is where the named ones are
+  // recorded, so an environment without it is not an environment. libmdbx does
+  // not say so: mdbx_drop() empties the table, then returns success without
+  // ever looking at `del` for a core DBI. The caller would be told that the
+  // deletion they asked for had happened. Refuse before anything is emptied, so
+  // that the refusal costs them nothing and `delete = FALSE` remains the way to
+  // ask for what libmdbx would have done.
+  if (del && db.size() == 0)
+    cpp11::stop("the main database cannot be deleted, only emptied: it is what "
+                "records the named databases. Use delete = FALSE to empty it");
+
   ensure_dbi(handle, db);
 
   drop_context context = {handle, del, MDBX_SUCCESS};

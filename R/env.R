@@ -121,16 +121,22 @@ mdbx_env_open <- function(path,
                  map_size, max_readers, mode, flags)
 }
 
-# How an environment is identified in the registry of the ones this process has
-# open, so that two spellings of one environment collide there instead of
-# reaching libmdbx and failing on its lock file.
+# Which data file a path names. The native layer turns this spelling into the
+# key it identifies open environments by, so that two names for one environment
+# collide there instead of reaching libmdbx and hanging on its lock file.
 #
-# normalizePath() resolves `.`, `..` and symlinks and picks the platform's own
-# spelling, but only for a path that exists -- and `create = TRUE` is routinely
-# given one that does not. The directory always exists by the time an open can
-# succeed, so it is the directory that is resolved and the basename that is
-# carried over untouched. A path whose own directory is missing is left as it
-# was written; no environment can live there, and libmdbx refuses it first.
+# Only the spelling is settled here. Relating two *different* names for one
+# environment is env_key_for()'s job in src/r_mdbx.cpp, and it does it by the
+# file's identity rather than by its name -- a hard link is one file under two
+# names, and no amount of string work relates those. So resolving symlinks here
+# would buy nothing this does not already get for free.
+#
+# The directory is still resolved, so that the spelling is canonical for the one
+# case identity cannot answer: a data file that does not exist yet.
+# normalizePath() manages that much because the directory always exists by the
+# time an open can succeed, while the data file under `create = TRUE` routinely
+# does not. A path whose own directory is missing is left as it was written; no
+# environment can live there, and libmdbx refuses it first.
 #
 # A directory-layout environment keeps its data in `mdbx.dat`, so that is the
 # name both of its spellings share: the directory as `subdir = TRUE` takes it,
@@ -141,10 +147,9 @@ mdbx_env_open <- function(path,
 # existing single-file environment as a directory that cannot exist, and the
 # second open of that environment would miss the registry and reach libmdbx.
 #
-# The key is compared, never shown -- the refusal prints the paths the caller
-# and the incumbent wrote -- so it need only be equal for equal environments.
 # A path directly under the root directory picks up a doubled slash from
-# file.path("/", "x"); every spelling of it picks up the same one.
+# file.path("/", "x"); harmless, since this is only ever stat()ed or compared
+# against another spelling that picks up the same one.
 env_key <- function(path, subdir) {
   key <- file.path(
     normalizePath(dirname(path), winslash = "/", mustWork = FALSE),

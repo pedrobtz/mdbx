@@ -24,6 +24,10 @@ removes the database itself, after which the handle refers to nothing and
 reopening it needs \code{create = TRUE} again.
 }
 \details{
+The main database is the exception: it is what records the named ones, so it
+can be emptied but not deleted, and \code{db = NULL} with \code{delete = TRUE} is an
+error rather than a quiet emptying.
+
 Emptying a database that holds records also resets its
 \link[=mdbx_dbi_sequence]{sequence counter} to zero, because 'libmdbx' rewrites
 the database's record and the counter lives in it. (Emptying one that is

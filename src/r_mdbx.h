@@ -24,6 +24,10 @@ namespace mdbx_r {
 // returning an error. The check therefore has to happen above libmdbx.
 long current_pid();
 
+// The open registry's key for the environment whose data file is spelled
+// `spelling`. Defined in r_mdbx.cpp, where the reasoning is.
+std::string env_key_for(const std::string &spelling);
+
 // R's Rboolean, spelled without the TRUE/FALSE tokens.
 //
 // mdbx.h includes <windows.h>, whose windef.h defines TRUE and FALSE as plain
@@ -64,8 +68,9 @@ struct env_handle {
 
   // How this environment is known to the open registry in r_mdbx.cpp, which
   // uses it to refuse -- and name -- a second open of the same environment in
-  // this process. Not the path R was given: env_key() in R/env.R canonicalises
-  // the spelling first, so that two names for one file collide here.
+  // this process. Not the path R was given, and not a canonical spelling of it
+  // either: env_key_for() keys an environment by its data file's identity, so
+  // that a hard link collides here as surely as a second spelling does.
   std::string key;
 
   // The path the caller wrote, kept so the refusal can name the spelling the

@@ -134,8 +134,11 @@ test_that("a directory-layout environment is refused the same way", {
 })
 
 test_that("two spellings of one path are one environment", {
-  # The registry compares strings, so env_key() canonicalises them first.
-  # Without it each of these reaches libmdbx and fails on the lock file.
+  # env_key() canonicalises the directory, and env_key_for() keys what it names
+  # by identity. Without them each of these reaches libmdbx, which coordinates
+  # through a lock file named after the path -- so a second name gets a second
+  # lock file, and then blocks forever on a lock this same single-threaded
+  # process is the one holding.
   dir <- tempfile("spell-")
   dir.create(dir)
   path <- file.path(dir, "c.mdbx")
@@ -195,6 +198,58 @@ test_that("a symlinked directory is the same environment", {
 
   expect_error(mdbx_env_open(file.path(link, "c.mdbx"), map_size = test_map_size),
                "already open in this process")
+})
+
+test_that("an environment reached by an aliased data file is the same one", {
+  # The cases canonicalising the spelling cannot reach. A symlink *at the final
+  # component* is one, because env_key() resolves only the directory; a hard
+  # link is the other, and no canonicalisation whatever resolves that -- it is
+  # one file with two equally real names. Both used to miss the registry and
+  # hang the session on libmdbx's lock file.
+  skip_on_os("windows")
+
+  dir <- tempfile("alias-")
+  dir.create(dir)
+  path <- file.path(dir, "c.mdbx")
+
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  on.exit(mdbx_env_close(env), add = TRUE)
+
+  symlink <- file.path(dir, "sym.mdbx")
+  skip_if_not(file.symlink(path, symlink), "could not create a symlink")
+  expect_error(mdbx_env_open(symlink, map_size = test_map_size),
+               "already open in this process")
+
+  hardlink <- file.path(dir, "hard.mdbx")
+  skip_if_not(file.link(path, hardlink), "could not create a hard link")
+  expect_error(mdbx_env_open(hardlink, map_size = test_map_size),
+               "already open in this process")
+
+  # The refusal still names both spellings, the caller's and the incumbent's.
+  message <- conditionMessage(tryCatch(
+    mdbx_env_open(hardlink, map_size = test_map_size), error = identity
+  ))
+  expect_match(message, hardlink, fixed = TRUE)
+  expect_match(message, sprintf("as '%s'", path), fixed = TRUE)
+})
+
+test_that("an alias is openable once the environment it aliases is closed", {
+  # Keying by identity must not leave a spelling permanently spoken for.
+  skip_on_os("windows")
+
+  dir <- tempfile("alias-")
+  dir.create(dir)
+  path <- file.path(dir, "c.mdbx")
+  symlink <- file.path(dir, "sym.mdbx")
+
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  mdbx_with_write(env, function(txn) mdbx_put(txn, "k", "v"))
+  skip_if_not(file.symlink(path, symlink), "could not create a symlink")
+  mdbx_env_close(env)
+
+  aliased <- mdbx_env_open(symlink, map_size = test_map_size)
+  on.exit(mdbx_env_close(aliased), add = TRUE)
+  expect_identical(mdbx_with_read(aliased, function(txn) mdbx_get(txn, "k")), "v")
 })
 
 test_that("a subdir environment and its data file are the same environment", {

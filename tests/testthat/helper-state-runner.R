@@ -255,7 +255,7 @@ generate_command <- function(fixture, model, profile) {
     sequence = list(op = "sequence", db = db,
                     increment = pick(list(0, 1, 5))),
     bad_dbi = list(op = "bad_dbi", db = db,
-                   field = pick(c("name", "path")),
+                   field = pick(c("name", "path", "token")),
                    value = pick(list(character(0), "", NA_character_,
                                      c("a", "b"), NULL, 42))),
     bad_arg = list(op = "bad_arg", which = pick(c("dots", "flag", "limit", "class"))),
@@ -442,9 +442,11 @@ run_command <- function(fixture, model, command) {
     # Built here rather than obtained from mdbx_dbi_open(), so that damaging a
     # record cannot also create a database the model does not know about -- and
     # so the refusal is provoked by the damage and not by a missing database.
-    # The path is the transaction's own, so the cross-environment check passes
-    # and the field validation is what has to catch this.
-    handle <- structure(list(name = "d1", path = attr(fixture_txn(fixture), "path")),
+    # The path and token are the transaction's own, so the cross-environment
+    # check passes and the field validation is what has to catch this.
+    handle <- structure(list(name = "d1",
+                             path = attr(fixture_txn(fixture), "path"),
+                             token = attr(fixture_txn(fixture), "token")),
                         class = "mdbx_dbi")
     handle[[command$field]] <- command$value
     outcome <- capture_outcome(
