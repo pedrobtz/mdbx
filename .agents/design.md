@@ -207,6 +207,47 @@ opens of one process. The path stays on the handle alongside it, so a refusal ca
 and when the paths are equal, the refusal says that the environment was closed and replaced rather
 than naming one path twice.
 
+### A panicked environment's path — **settled in the code review**
+
+**Claimed for the life of the process, whether or not the handle is closed.**
+
+When libmdbx panics, `close_handle()` deliberately never hands the environment back to it: closing a
+handle whose invariants libmdbx has already rejected is how a bad situation becomes a crash. The
+consequence is that nothing ever releases the lock file, the reader slot or the descriptors, so the
+path is unopenable until the process exits — and the registry has to say so rather than let a later
+open discover it from libmdbx.
+
+The registry keyed open environments by live handle, and a poisoned handle being closed removed its
+entry. The next open then passed the registry and reached libmdbx, which failed on the lock file
+with a bare `mdbx error 35` on macOS — or, on a platform whose lock blocks instead of failing, hung
+the session. That is the exact failure the registry exists to prevent.
+
+The key is therefore retained in a separate list of strings, which outlives the handle the finalizer
+frees. A poisoned environment that is still held is refused too, and for the same reason, with a
+message that says so: the ordinary "use the existing handle, or close it" advice is impossible on
+both halves, since every operation on such a handle refuses and closing it frees nothing.
+
+### Emptying the main database — **settled in the code review**
+
+**Refused while any named database exists.**
+
+A named database *is* a record in the main one, and `mdbx_drop()` on `MAIN_DBI` purges the whole main
+tree — so emptying the main database destroys every named database in the environment. Nothing in
+"removes every record but keeps the database" prepares a caller for that.
+
+It also cannot be made consistent afterwards. The transaction's cached handles go on answering from
+trees libmdbx has already purged, so within one transaction `mdbx_dbi_list()` reports nothing while a
+handle opened moments earlier still returns rows. libmdbx keeps its own environment-level record of
+the name besides, so after the commit `mdbx_dbi_open()` still succeeds for a database that no longer
+exists and the read through it fails with a raw `MDBX_BAD_DBI`. Repairing that would need
+`mdbx_dbi_close()` — the one call this package refuses to make, for the reasons under *Database
+handles*.
+
+So the operation is refused while there is anything to lose, and stays available once there is not:
+emptying the main database of an environment with no named databases is exactly as safe as it sounds.
+Dropping the named databases by name first, or deleting the main database's keys individually, are
+the two ways to ask for what the refusal declines to guess at.
+
 ### Environment resizing
 
 MDBX has mechanisms related to map sizing and geometry.

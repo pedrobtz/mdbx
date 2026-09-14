@@ -32,6 +32,29 @@ test_that("state reports usability, not just whether a handle is allocated", {
   mdbx_env_close(env)
 })
 
+test_that("an environment query does not borrow a failed transaction", {
+  # Both entry points are documented as reporting one snapshot of the
+  # environment, and neither was asked about the transaction. Reusing an errored
+  # one answered mdbx_env_stat(env) with a raw MDBX_BAD_TXN while
+  # mdbx_env_info(env) beside it still succeeded.
+  env <- mdbx_env_open(env_path(), map_size = 1024^2)
+  txn <- mdbx_txn_begin(env, write = TRUE)
+
+  expect_error(mdbx_put(txn, "k", strrep("v", 4e6)), "MDBX_MAP_FULL")
+  expect_identical(mdbx_txn_state(txn), "failed")
+
+  expect_type(mdbx_env_stat(env), "list")
+  expect_type(mdbx_env_info(env), "list")
+
+  # Asking *about* the transaction still reports the transaction's own failure:
+  # it is only the environment-level question that stops borrowing it.
+  expect_error(mdbx_env_stat(txn), "MDBX_BAD_TXN")
+
+  mdbx_txn_abort(txn)
+  expect_type(mdbx_env_stat(env), "list")
+  mdbx_env_close(env)
+})
+
 test_that("state reports a poisoned owner even when the transaction is clean", {
   env <- local_env()
   txn <- mdbx_txn_begin(env)

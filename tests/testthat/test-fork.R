@@ -65,6 +65,29 @@ test_that("an inherited transaction is refused too", {
   mdbx_env_close(env)
 })
 
+test_that("a child is told about the fork, not to end transactions it cannot", {
+  # The live-transaction guard used to run first, so the child was told to
+  # "commit or abort them first" -- advice every transaction entry point refuses
+  # it by pid, from the one entry point that did not mention the fork.
+  skip_if_cannot_fork()
+
+  env <- local_seeded_env()
+  txn <- mdbx_txn_begin(env, write = TRUE)
+
+  message <- in_fork(function() mdbx_env_close(env))
+  expect_match(message, "inherited across a fork()", fixed = TRUE)
+  expect_false(grepl("commit or abort them first", message, fixed = TRUE))
+
+  # The other entry points already said so, and still do.
+  expect_match(in_fork(function() mdbx_txn_abort(txn)), "inherited across a fork()",
+               fixed = TRUE)
+
+  # The parent is untouched by any of it.
+  expect_identical(mdbx_txn_state(txn), "active")
+  mdbx_txn_abort(txn)
+  mdbx_env_close(env)
+})
+
 test_that("a child cannot close its parent's environment", {
   skip_if_cannot_fork()
 

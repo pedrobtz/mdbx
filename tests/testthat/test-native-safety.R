@@ -219,6 +219,42 @@ test_that("a panic in a transaction operation poisons the environment too", {
   expect_error(mdbx_env_stat(env), "unusable after a libmdbx assertion")
 })
 
+test_that("a poisoned environment keeps its path claimed, closed or not", {
+  # close_handle() deliberately never hands a poisoned environment back to
+  # libmdbx, so the lock file stays held for the life of the process. The
+  # registry entry went away on close all the same, and the next open sailed
+  # past it into libmdbx -- which failed on the lock file with a bare errno
+  # (`mdbx error 35` on macOS), or on a platform whose lock blocks instead of
+  # failing, hung the session. That is precisely what the registry is for.
+  path <- env_path()
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  expect_error(mdbx:::mdbx_test_panic_stat_(env, FALSE), "libmdbx assertion failed")
+
+  # Poisoned but still held: "use the existing handle" would be impossible
+  # advice, since every operation on it refuses.
+  message <- conditionMessage(tryCatch(
+    mdbx_env_open(path, map_size = test_map_size), error = identity
+  ))
+  expect_match(message, "libmdbx assertion failure", fixed = TRUE)
+  expect_false(grepl("use the existing handle", message, fixed = TRUE))
+  expect_false(grepl("mdbx error", message, fixed = TRUE))
+
+  # And after the close that drops the handle entirely, when nothing is left to
+  # find in the registry at all.
+  mdbx_env_close(env)
+  after <- conditionMessage(tryCatch(
+    mdbx_env_open(path, map_size = test_map_size), error = identity
+  ))
+  expect_match(after, "libmdbx assertion failure", fixed = TRUE)
+  expect_false(grepl("mdbx error", after, fixed = TRUE))
+
+  # A different environment is unaffected: it is the path that is claimed, not
+  # the ability to open environments.
+  other <- mdbx_env_open(env_path(), map_size = test_map_size)
+  expect_true(mdbx_env_is_open(other))
+  mdbx_env_close(other)
+})
+
 test_that("a panic with a live transaction can still be cleaned up", {
   env <- local_env()
   txn <- mdbx_txn_begin(env)

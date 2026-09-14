@@ -89,9 +89,12 @@ mdbx_dbi_open <- function(txn, name, create = FALSE) {
 #' removes the database itself, after which the handle refers to nothing and
 #' reopening it needs `create = TRUE` again.
 #'
-#' The main database is the exception: it is what records the named ones, so it
-#' can be emptied but not deleted, and `db = NULL` with `delete = TRUE` is an
-#' error rather than a quiet emptying.
+#' The main database is the exception, twice over. It is what records the named
+#' ones, so it cannot be deleted at all: `db = NULL` with `delete = TRUE` is an
+#' error rather than the quiet emptying 'libmdbx' would perform. And emptying it
+#' destroys every named database along with it, for the same reason — so that is
+#' refused too while any named database exists. Drop those by name first if you
+#' really mean to, or delete the main database's own keys individually.
 #'
 #' Emptying a database that holds records also resets its
 #' [sequence counter][mdbx_dbi_sequence] to zero, because 'libmdbx' rewrites
@@ -106,7 +109,8 @@ mdbx_dbi_open <- function(txn, name, create = FALSE) {
 #' @param txn An `mdbx_txn` object from [mdbx_txn_begin()], opened for writing.
 #'   Both emptying and deleting are writes, so a read transaction is refused.
 #' @param db An `mdbx_dbi` object from [mdbx_dbi_open()], or `NULL` for the main
-#'   database — which can be emptied but not deleted.
+#'   database — which can never be deleted, and can be emptied only while no
+#'   named database exists to be destroyed along with it.
 #' @param delete If `TRUE`, delete the database rather than just emptying it.
 #' @return `NULL`, invisibly.
 #' @seealso [mdbx_dbi_open()]
@@ -126,7 +130,38 @@ mdbx_dbi_open <- function(txn, name, create = FALSE) {
 #' unlink(c(path, paste0(path, "-lck")))
 mdbx_dbi_drop <- function(txn, db, delete = FALSE) {
   delete <- check_bool(delete, "delete")
-  mdbx_dbi_drop_(txn, db_name(db, txn), delete)
+  name <- db_name(db, txn)
+
+  # Emptying the main database destroys every named database with it, because
+  # what a named database *is* is a record in the main one -- libmdbx purges the
+  # whole main tree and those records go with it. Nothing about "removes every
+  # record but keeps the database" prepares anyone for that.
+  #
+  # Worse, it cannot be made consistent afterwards. The transaction's cached
+  # handles go on answering from trees libmdbx has already purged, so within the
+  # same transaction mdbx_dbi_list() reports nothing while a handle opened a
+  # moment earlier still returns rows; and libmdbx keeps its own environment-
+  # level record of the name, so after the commit mdbx_dbi_open() still succeeds
+  # for a database that no longer exists and the read through it fails with a
+  # raw MDBX_BAD_DBI. Putting that right would need mdbx_dbi_close(), the one
+  # call this package refuses to make (see .agents/design.md).
+  #
+  # So refuse while there is anything to lose. Emptying main is exactly as safe
+  # as it sounds once no named database is riding on it, and that case stays
+  # allowed.
+  if (length(name) == 0L && !delete) {
+    named <- mdbx_dbi_list_(txn)
+    if (length(named) > 0L) {
+      stop(sprintf(paste0(
+        "emptying the main database would also destroy the %d named database%s ",
+        "in this environment, because each one is a record in the main ",
+        "database. Drop them by name first if that is what you want, or delete ",
+        "the main database's keys individually"
+      ), length(named), if (length(named) == 1L) "" else "s"), call. = FALSE)
+    }
+  }
+
+  mdbx_dbi_drop_(txn, name, delete)
   invisible(NULL)
 }
 

@@ -96,8 +96,36 @@ int live_txn_handles = 0;
 //
 // Entries are added once an open has succeeded and removed as soon as the
 // handle's environment is closed, by either the explicit close or the
-// finalizer, so a path reappears the moment reopening it would work.
+// finalizer, so a path reappears the moment reopening it would work -- with
+// the one exception poisoned_keys below records.
 std::vector<env_handle *> open_envs;
+
+// The keys of environments a libmdbx panic poisoned and that were then
+// detached without being closed.
+//
+// close_handle() deliberately does not hand a poisoned environment back to
+// libmdbx: re-entering it to close a handle whose invariants it has already
+// rejected is how a bad situation becomes a crash. Nothing else releases the
+// lock file, the reader slot or the file descriptors either, so they stay held
+// until the process ends -- and the path stays unopenable for just as long.
+//
+// The handle that used to say so is gone by then, freed by the finalizer, so
+// the fact has to outlive it. A key is a string and does. Without this an open
+// aimed at that path passes the registry and reaches libmdbx, which fails on
+// the lock file with a bare errno -- `mdbx error 35` on macOS -- or, on a
+// platform whose lock blocks rather than fails, hangs the session. That is the
+// exact failure the registry exists to make unreachable.
+std::vector<std::string> poisoned_keys;
+
+bool key_is_poisoned(const std::string &key) {
+  return std::find(poisoned_keys.begin(), poisoned_keys.end(), key) !=
+         poisoned_keys.end();
+}
+
+void retain_poisoned_key(const std::string &key) {
+  if (!key.empty() && !key_is_poisoned(key))
+    poisoned_keys.push_back(key);
+}
 
 void register_env(env_handle *handle) { open_envs.push_back(handle); }
 
@@ -790,7 +818,12 @@ void close_handle(env_handle *handle, bool propagate) {
   // A panicked environment is left to the OS: re-entering libmdbx to close a
   // handle whose invariants it has already rejected is how a bad situation
   // becomes a crash.
+  //
+  // Which means libmdbx never learns to release the lock file, and the path
+  // stays taken for the life of the process. unregister_env() above has already
+  // given it up, so record the key separately -- see poisoned_keys.
   if (handle->poisoned) {
+    retain_poisoned_key(handle->key);
     handle->env = nullptr;
     return;
   }
@@ -1094,8 +1127,29 @@ cpp11::sexp mdbx_env_open_(std::string path, std::string spelling, bool readonly
   // The incumbent's own spelling goes in the message when it differs from the
   // one being refused: the caller matched it on the canonical key, so without
   // it they are told that a path they did not write is already open.
-  if (mdbx_r::env_handle *incumbent =
-          mdbx_r::find_open_env(mdbx_r::env_key_for(spelling))) {
+  const std::string key = mdbx_r::env_key_for(spelling);
+
+  // Poisoned and already detached: libmdbx still holds the file and nothing
+  // will ever make it let go, so say that rather than let the open reach the
+  // lock file. No handle survives to be offered as the alternative.
+  if (mdbx_r::key_is_poisoned(key))
+    cpp11::stop("mdbx environment '%s' cannot be opened: a libmdbx assertion "
+                "failure left an earlier handle for it unusable, and libmdbx "
+                "still holds the file for as long as this process lives. Start "
+                "a new R session to reach it again",
+                path.c_str());
+
+  if (mdbx_r::env_handle *incumbent = mdbx_r::find_open_env(key)) {
+    // Poisoned but still held. "Use the existing handle" would be impossible
+    // advice -- every operation on it refuses -- and closing it does not free
+    // the path either, so neither half of the ordinary refusal applies.
+    if (incumbent->poisoned)
+      cpp11::stop("mdbx environment '%s' cannot be opened: a libmdbx assertion "
+                  "failure left the handle this process holds for it unusable, "
+                  "and libmdbx still holds the file for as long as this process "
+                  "lives. Start a new R session to reach it again",
+                  path.c_str());
+
     if (incumbent->path == path)
       cpp11::stop("mdbx environment '%s' is already open in this process; use "
                   "the existing handle, or close it before opening it again",
@@ -1182,6 +1236,17 @@ void mdbx_env_close_(cpp11::sexp env) {
   // already does for this case when the finalizer runs.
   if (handle->poisoned)
     mdbx_r::detach_txns(handle);
+
+  // Named before the live-transaction guard below, not after it. A child that
+  // inherited this environment cannot commit or abort anything -- every
+  // transaction entry point refuses an inherited handle by pid -- so being told
+  // to do that first is advice it cannot take, from the one entry point that
+  // does not mention the fork the other three do. close_handle() raises the
+  // refusal that belongs here.
+  if (handle->pid != mdbx_r::current_pid()) {
+    mdbx_r::close_handle(handle, true);
+    return;
+  }
 
   // Refuse rather than close underneath them. mdbx_env_close_ex() documents
   // that using a transaction afterwards is UB that "would cause a SIGSEGV", and
@@ -1363,6 +1428,45 @@ void mdbx_txn_abort_(cpp11::sexp txn) {
   finish_txn(txn, false);
 }
 
+namespace {
+
+struct flags_context {
+  mdbx_r::txn_handle *handle;
+  unsigned flags;
+};
+
+void flags_call(void *data) {
+  flags_context *context = static_cast<flags_context *>(data);
+  context->flags =
+      static_cast<unsigned>(mdbx_txn_flags(context->handle->txn));
+}
+
+void poison_flags(void *data) {
+  mdbx_r::poison_txn(static_cast<flags_context *>(data)->handle);
+}
+
+// Whether libmdbx has marked this transaction errored -- MDBX_MAP_FULL above
+// all. Every later operation on one then fails with MDBX_BAD_TXN, and its
+// commit reports a rollback.
+//
+// Routed through guard() like every other libmdbx call that touches a
+// transaction. ASSERT() inside mdbx_txn_flags() compiles out at this package's
+// MDBX_CHECKING, so an unguarded call is not reachable in the shipped build --
+// but a vendor bump, a sanitizer leg or MDBX_FORCE_ASSERTIONS would make it so,
+// and a panic arriving with no poison callback leaves neither the transaction
+// nor the environment marked. The environment's finalizer would then re-enter
+// libmdbx to close a handle whose invariants had already failed.
+bool txn_has_error(mdbx_r::txn_handle *handle) {
+  if (handle == nullptr || handle->txn == nullptr)
+    return false;
+
+  flags_context context = {handle, 0};
+  mdbx_r::guard(flags_call, &context, poison_flags);
+  return (context.flags & MDBX_TXN_ERROR) != 0;
+}
+
+} // namespace
+
 [[cpp11::register]]
 std::string mdbx_txn_state_(cpp11::sexp txn) {
   if (!mdbx_r::is_txn_sexp(txn))
@@ -1398,12 +1502,8 @@ std::string mdbx_txn_state_(cpp11::sexp txn) {
 
   switch (handle->state) {
   case mdbx_r::txn_state::active:
-    // libmdbx sets MDBX_TXN_ERROR when an operation failed in a way the
-    // transaction cannot continue from -- MDBX_MAP_FULL above all. Every later
-    // operation then fails with MDBX_BAD_TXN and the commit reports a
-    // rollback, so "active" was the one thing this was not.
-    if (handle->txn != nullptr &&
-        (mdbx_txn_flags(handle->txn) & MDBX_TXN_ERROR) != 0)
+    // "active" was the one thing a transaction libmdbx has errored is not.
+    if (txn_has_error(handle))
       return "failed";
     return "active";
   case mdbx_r::txn_state::committed:
@@ -1655,9 +1755,18 @@ cpp11::list run_info(mdbx_r::env_handle *owner, MDBX_txn *txn) {
 // with MDBX_BAD_RSLOT. Reusing the live transaction avoids the collision, and
 // makes the environment and transaction forms report the same thing -- which
 // is what the documentation has always claimed they do.
+// The transaction to read the environment's statistics within, or null to let
+// libmdbx take its own snapshot.
+//
+// A transaction libmdbx has errored is skipped. Reusing one answers the
+// environment-level question with MDBX_BAD_TXN -- so mdbx_env_stat(env) failed
+// while mdbx_env_info(env) beside it succeeded, though the two are documented
+// as reporting one snapshot, and neither was asked about the transaction. With
+// no transaction to reuse both report the last committed state, which is what
+// an environment-level query means.
 MDBX_txn *current_txn(mdbx_r::env_handle *handle) {
   for (mdbx_r::txn_handle *txn : handle->live_txns) {
-    if (txn->txn != nullptr)
+    if (txn->txn != nullptr && !txn_has_error(txn))
       return txn->txn;
   }
   return nullptr;
