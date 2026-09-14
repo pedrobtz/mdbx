@@ -390,8 +390,31 @@ struct open_context {
   int rc;
 };
 
+// Test-only fault injection: make the next guarded open or close raise a
+// libmdbx panic.
+//
+// Both panics are otherwise unreachable from R -- libmdbx has to violate an
+// invariant inside mdbx_env_open() or mdbx_env_close() for real -- and both
+// leave this package holding an environment whose path it must go on claiming.
+// A regression test needs to reach them, so the flags exist; each is consumed
+// by the call it fires, and nothing outside the suite ever sets one.
+bool panic_next_open = false;
+bool panic_next_close = false;
+
+} // namespace
+
+void arm_open_panic() { panic_next_open = true; }
+void arm_close_panic() { panic_next_close = true; }
+
+namespace {
+
 void open_call(void *data) {
   open_context *context = static_cast<open_context *>(data);
+
+  if (panic_next_open) {
+    panic_next_open = false;
+    mdbx_r_panic("open-guard test", "open_call", 1);
+  }
 
   context->rc = mdbx_env_create(&context->handle->env);
   if (context->rc != MDBX_SUCCESS)
@@ -440,6 +463,12 @@ struct close_context {
 
 void close_call(void *data) {
   close_context *context = static_cast<close_context *>(data);
+
+  if (panic_next_close) {
+    panic_next_close = false;
+    mdbx_r_panic("close-guard test", "close_call", 1);
+  }
+
   context->rc = mdbx_env_close(context->handle->env);
 }
 
@@ -833,6 +862,17 @@ void close_handle(env_handle *handle, bool propagate) {
   mdbx_r_guard_result result =
       mdbx_r_run_guarded(close_call, &context, poison_close, &panic);
 
+  // A panic raised by the close itself, rather than one that arrived before it.
+  // libmdbx's state is then unknown -- it may have released the file, it may
+  // not, and there is no second call that could make it certain, because
+  // calling back into a panicked libmdbx is the thing this package will not do.
+  // unregister_env() has already given the path up, so claim it: reporting it
+  // free is the answer that ends in a bare errno or a hang. Unconditional,
+  // because the finalizer reaches here too and a GC-time panic loses the path
+  // just as thoroughly as an explicit close does.
+  if (result != MDBX_R_GUARD_OK)
+    retain_poisoned_key(handle->key);
+
   handle->env = nullptr;
 
   if (!propagate)
@@ -1184,9 +1224,20 @@ cpp11::sexp mdbx_env_open_(std::string path, std::string spelling, bool readonly
   mdbx_r_guard_result result =
       mdbx_r_run_guarded(mdbx_r::open_call, &context, mdbx_r::poison_open, &panic);
 
-  // Poisoned mid-open: the partially built env is deliberately not closed.
-  if (result != MDBX_R_GUARD_OK)
+  // Poisoned mid-open: the partially built env is deliberately not closed, and
+  // the unique_ptr below frees only the handle struct -- so if libmdbx took the
+  // lock file before it panicked, it holds it for the life of the process with
+  // nothing left pointing at it.
+  //
+  // Claim the path on the way out, under both spellings the key can take: the
+  // one computed before the open, and the one the data file this attempt may
+  // just have created now yields. handle->key is still empty here, so neither
+  // comes from the handle.
+  if (result != MDBX_R_GUARD_OK) {
+    mdbx_r::retain_poisoned_key(key);
+    mdbx_r::retain_poisoned_key(mdbx_r::env_key_for(spelling));
     mdbx_r::stop_after_panic(panic);
+  }
 
   if (context.rc != MDBX_SUCCESS) {
     // mdbx_env_create() succeeded but a later step failed; closing the handle
@@ -1229,6 +1280,21 @@ void mdbx_env_close_(cpp11::sexp env) {
   if (handle == nullptr)
     return;
 
+  // The fork check comes first, before anything below touches the handle.
+  //
+  // A child that inherited this environment can do nothing with it, so the
+  // refusal it gets should say that -- not the live-transaction complaint below,
+  // which would tell it to commit or abort transactions every entry point
+  // refuses it by pid. And detaching first would be worse than a bad message:
+  // detach_txns() rewrites the transaction handles in this process's copy, so
+  // the child's own later mdbx_txn_abort() would find a handle already marked
+  // finished and return silently, instead of naming the fork the way every
+  // other entry point does.
+  if (handle->pid != mdbx_r::current_pid()) {
+    mdbx_r::close_handle(handle, true);
+    return;
+  }
+
   // A poisoned environment is never handed back to libmdbx, so its registered
   // transactions cannot be ended the ordinary way either -- and refusing on
   // their account would leave no way to release the environment at all.
@@ -1236,17 +1302,6 @@ void mdbx_env_close_(cpp11::sexp env) {
   // already does for this case when the finalizer runs.
   if (handle->poisoned)
     mdbx_r::detach_txns(handle);
-
-  // Named before the live-transaction guard below, not after it. A child that
-  // inherited this environment cannot commit or abort anything -- every
-  // transaction entry point refuses an inherited handle by pid -- so being told
-  // to do that first is advice it cannot take, from the one entry point that
-  // does not mention the fork the other three do. close_handle() raises the
-  // refusal that belongs here.
-  if (handle->pid != mdbx_r::current_pid()) {
-    mdbx_r::close_handle(handle, true);
-    return;
-  }
 
   // Refuse rather than close underneath them. mdbx_env_close_ex() documents
   // that using a transaction afterwards is UB that "would cause a SIGSEGV", and
@@ -1417,6 +1472,18 @@ void mdbx_txn_abort_(cpp11::sexp txn) {
   //
   // A handle from another process is not covered: it belongs to the parent,
   // and finish_txn() refuses it by name.
+  //
+  // Of the four disjuncts only the two `poisoned` ones can fire as the code
+  // stands, and it is worth saying why rather than leaving the next reader to
+  // re-derive it. `owner == nullptr` cannot: mark_finished() and detach_txns()
+  // are the only writers of it, and both null `txn` alongside, which the return
+  // above has already excluded. `owner->env == nullptr` cannot either, because
+  // the paths that clear it -- the finalizer, and an explicit close -- either
+  // run detach_txns() first or belong to a child process, and the pid conjunct
+  // excludes the child. They are kept as belt and braces all the same: every
+  // one of them describes an ownership graph this transaction must not be
+  // handed to libmdbx under, and the cost of testing them is nothing next to
+  // the cost of being wrong about which states are reachable.
   if (handle->pid == mdbx_r::current_pid() &&
       (handle->poisoned || handle->owner == nullptr ||
        handle->owner->env == nullptr || handle->owner->poisoned)) {
@@ -1755,19 +1822,28 @@ cpp11::list run_info(mdbx_r::env_handle *owner, MDBX_txn *txn) {
 // with MDBX_BAD_RSLOT. Reusing the live transaction avoids the collision, and
 // makes the environment and transaction forms report the same thing -- which
 // is what the documentation has always claimed they do.
-// The transaction to read the environment's statistics within, or null to let
-// libmdbx take its own snapshot.
+// An errored transaction is skipped, so that an environment-level query is not
+// answered with MDBX_BAD_TXN -- mdbx_env_stat(env) failed that way while
+// mdbx_env_info(env) beside it succeeded, though the two are documented as
+// reporting one snapshot and neither was asked about the transaction. Skipped
+// means falling back to a null transaction, and both then report the last
+// committed state, which is what an environment-level query means.
 //
-// A transaction libmdbx has errored is skipped. Reusing one answers the
-// environment-level question with MDBX_BAD_TXN -- so mdbx_env_stat(env) failed
-// while mdbx_env_info(env) beside it succeeded, though the two are documented
-// as reporting one snapshot, and neither was asked about the transaction. With
-// no transaction to reuse both report the last committed state, which is what
-// an environment-level query means.
+// Only a *write* transaction, though. Falling back to null is exactly what the
+// paragraph above says must not happen while this thread holds a read
+// transaction: libmdbx starts an internal read of its own and collides with
+// the reader slot already taken. A write transaction holds no reader slot, so
+// the internal read is free to proceed -- and a read transaction cannot carry
+// MDBX_TXN_ERROR anyway, since nothing a read does sets it. If one ever could,
+// reusing it and reporting MDBX_BAD_TXN is the lesser of the two failures, and
+// the honest one.
 MDBX_txn *current_txn(mdbx_r::env_handle *handle) {
   for (mdbx_r::txn_handle *txn : handle->live_txns) {
-    if (txn->txn != nullptr && !txn_has_error(txn))
-      return txn->txn;
+    if (txn->txn == nullptr)
+      continue;
+    if (txn->write && txn_has_error(txn))
+      continue;
+    return txn->txn;
   }
   return nullptr;
 }
@@ -2292,6 +2368,21 @@ void mdbx_test_panic_stat_(cpp11::sexp env, bool info) {
     mdbx_r::guard(panic_immediately, &context, mdbx_r::poison_stat);
   }
 }
+
+// Internal test hooks: arm the fault injection in open_call and close_call, so
+// a panic raised *by* an open or a close -- as opposed to one that arrived
+// before it -- can be driven through the real control flow of mdbx_env_open_()
+// and close_handle(). Each flag is consumed by the call it fires.
+//
+// What they exist to catch: both paths leave libmdbx holding the file with
+// nothing left pointing at it, so both have to claim the path on the way out.
+// Neither did, and the registry then reported free a path the next open would
+// have met a bare errno -- or a hang -- on.
+[[cpp11::register]]
+void mdbx_test_arm_open_panic_() { mdbx_r::arm_open_panic(); }
+
+[[cpp11::register]]
+void mdbx_test_arm_close_panic_() { mdbx_r::arm_close_panic(); }
 
 // Internal regression hook, as above but for a transaction operation: drive a
 // panic through the guard mdbx_get() installs, using the real get_context and

@@ -255,6 +255,54 @@ test_that("a poisoned environment keeps its path claimed, closed or not", {
   mdbx_env_close(other)
 })
 
+test_that("a panic raised by the close itself claims the path too", {
+  # The close path recorded a poisoned key only for a handle that arrived
+  # poisoned. A panic raised *by* mdbx_env_close() skipped that branch entirely:
+  # unregister_env() had already given the path up, libmdbx may or may not have
+  # released the file, and nothing was left to say so.
+  path <- env_path()
+  env <- mdbx_env_open(path, map_size = test_map_size)
+
+  mdbx:::mdbx_test_arm_close_panic_()
+  expect_error(mdbx_env_close(env), "libmdbx assertion failed")
+
+  # The handle is spent either way.
+  expect_false(mdbx_env_is_open(env))
+
+  message <- conditionMessage(tryCatch(
+    mdbx_env_open(path, map_size = test_map_size), error = identity
+  ))
+  expect_match(message, "libmdbx assertion failure", fixed = TRUE)
+  expect_false(grepl("mdbx error", message, fixed = TRUE))
+
+  # Other paths are untouched, so the claim is the path's and not the process's.
+  other <- mdbx_env_open(env_path(), map_size = test_map_size)
+  expect_true(mdbx_env_is_open(other))
+  mdbx_env_close(other)
+})
+
+test_that("a panic raised by the open claims the path it may have taken", {
+  # Nothing pointed at the half-built environment once the unique_ptr let go of
+  # the handle struct, so if libmdbx had taken the lock file before it panicked
+  # it held it with no handle and no registry entry naming it. The key is not on
+  # the handle at that point either, which is why both spellings are claimed.
+  path <- env_path()
+
+  mdbx:::mdbx_test_arm_open_panic_()
+  expect_error(mdbx_env_open(path, map_size = test_map_size),
+               "libmdbx assertion failed")
+
+  message <- conditionMessage(tryCatch(
+    mdbx_env_open(path, map_size = test_map_size), error = identity
+  ))
+  expect_match(message, "libmdbx assertion failure", fixed = TRUE)
+  expect_false(grepl("mdbx error", message, fixed = TRUE))
+
+  other <- mdbx_env_open(env_path(), map_size = test_map_size)
+  expect_true(mdbx_env_is_open(other))
+  mdbx_env_close(other)
+})
+
 test_that("a panic with a live transaction can still be cleaned up", {
   env <- local_env()
   txn <- mdbx_txn_begin(env)

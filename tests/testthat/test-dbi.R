@@ -304,6 +304,54 @@ test_that("a handle cannot be used against a replacement at the same path", {
   })
 })
 
+test_that("a bad `txn` is named as such, not as a handle mismatch", {
+  # db_name() is forced before the native entry point can check its own
+  # argument, so it used to compare the handle against the attributes of
+  # something that has none. sprintf() with a NULL argument returns
+  # character(0), and stop(character(0)) raises an error with no text at all --
+  # the caller got a bare "Error:" for passing the wrong first argument.
+  env <- multi_env()
+  db <- mdbx_with_write(env, function(txn) mdbx_dbi_open(txn, "x", create = TRUE))
+
+  for (bad in list(42, "txn", NULL, list())) {
+    for (call in list(
+      function(t) mdbx_get(t, "k", db = db),
+      function(t) mdbx_keys(t, db = db),
+      function(t) mdbx_put(t, "k", "v", db = db)
+    )) {
+      condition <- tryCatch(call(bad), error = identity)
+      expect_s3_class(condition, "error")
+      expect_gt(nchar(conditionMessage(condition)), 0L)
+      expect_match(conditionMessage(condition), "mdbx_txn")
+    }
+  }
+
+  mdbx_env_close(env)
+})
+
+test_that("emptying main in a read transaction names the read transaction", {
+  # The named-database guard ran before the native write check, so a read
+  # transaction was told about databases it would have destroyed rather than
+  # that it could not write at all -- while the delete = TRUE half of the same
+  # function reported read-only correctly.
+  env <- multi_env()
+  mdbx_with_write(env, function(txn) mdbx_dbi_open(txn, "d1", create = TRUE))
+
+  mdbx_with_read(env, function(txn) {
+    expect_error(mdbx_dbi_drop(txn, NULL), "read-only")
+    expect_error(mdbx_dbi_drop(txn, NULL, delete = TRUE), "read-only")
+  })
+
+  # An environment with no named database takes the same path, and must still
+  # report the transaction rather than succeeding.
+  plain <- local_env()
+  mdbx_with_read(plain, function(txn) {
+    expect_error(mdbx_dbi_drop(txn, NULL), "read-only")
+  })
+
+  mdbx_env_close(env)
+})
+
 test_that("a database can be emptied or deleted", {
   env <- multi_env()
 

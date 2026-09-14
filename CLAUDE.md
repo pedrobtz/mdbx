@@ -148,9 +148,21 @@ around `.Call()`. This is the main performance lesson recorded from the referenc
 
 ### Errors
 
-A central `mdbx_check(rc)` helper translates MDBX status codes to R conditions via
-`cpp11::stop()` (printf-style, throws rather than longjmping), preserving the original code. Not every non-`MDBX_SUCCESS` status is an error — "key not found" is expected to
-surface as `NULL` rather than a condition.
+A central `check(rc)` helper in `src/r_mdbx.cpp` translates MDBX status codes into **structured R
+conditions**, not bare strings. It builds a condition carrying `message`, `code` (the original
+MDBX status) and `name` (e.g. `"MDBX_MAP_FULL"`), classed
+`c("mdbx_<name>", "mdbx_error", "error", "condition")` — so callers can dispatch on
+`class = "mdbx_error"` or a specific subclass instead of matching message text, which is what the
+tests do wherever a status is platform-dependent.
+
+It signals through `base::stop()` rather than `cpp11::stop()`/`Rf_error()`, because those format a
+string and would discard the fields. cpp11 routes the call through `R_UnwindProtect`, so the R jump
+still resumes at the `.Call()` boundary with C++ destructors run. `cpp11::stop()` remains the right
+tool for this package's *own* refusals — argument contradictions, lifecycle violations — which carry
+no MDBX status.
+
+Not every non-`MDBX_SUCCESS` status is an error — "key not found" is expected to surface as `NULL`
+rather than a condition.
 
 ## Reference bindings
 

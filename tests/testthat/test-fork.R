@@ -88,6 +88,32 @@ test_that("a child is told about the fork, not to end transactions it cannot", {
   mdbx_env_close(env)
 })
 
+test_that("a refused close in a child leaves its transactions still refusing", {
+  # mdbx_env_close() detached the transactions of a poisoned environment before
+  # it checked the pid, and detach_txns() rewrites them in this process's copy.
+  # The child's own later abort then found a handle already marked finished and
+  # returned silently, instead of naming the fork every other entry point names.
+  skip_if_cannot_fork()
+
+  env <- local_seeded_env()
+  txn <- mdbx_txn_begin(env, write = TRUE)
+  expect_error(mdbx:::mdbx_test_panic_stat_(env, FALSE), "libmdbx assertion failed")
+
+  both <- in_fork(function() {
+    close_message <- tryCatch(mdbx_env_close(env), error = conditionMessage)
+    abort_message <- tryCatch({
+      mdbx_txn_abort(txn)
+      "returned silently"
+    }, error = conditionMessage)
+    c(close_message, abort_message)
+  })
+
+  expect_match(both[[1]], "inherited across a fork()", fixed = TRUE)
+  expect_match(both[[2]], "inherited across a fork()", fixed = TRUE)
+
+  mdbx_env_close(env)
+})
+
 test_that("a child cannot close its parent's environment", {
   skip_if_cannot_fork()
 

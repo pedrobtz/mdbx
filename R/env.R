@@ -157,21 +157,26 @@ mdbx_env_open <- function(path,
 # through MDBX_NOSUBDIR. Three rules that must agree is how one spelling of an
 # environment comes to be keyed differently from another, which is the reopen
 # the registry exists to catch. Two of the three are now the same expression.
-env_layout <- function(path, subdir = FALSE) {
+# Returns the data file and nothing else. It is tempting to report the layout
+# alongside it, but this function does not decide that -- libmdbx does, and says
+# so through MDBX_NOSUBDIR once the open succeeds, which is what
+# print.mdbx_env() shows. A second answer here would be one more thing that has
+# to agree, which is the problem this function exists to remove.
+env_data_file <- function(path, subdir = FALSE) {
   spelling <- file.path(
     normalizePath(dirname(path), winslash = "/", mustWork = FALSE),
     basename(path)
   )
 
   if (dir.exists(spelling) || (subdir && !file.exists(spelling))) {
-    list(data = file.path(spelling, "mdbx.dat"), subdir = TRUE)
+    file.path(spelling, "mdbx.dat")
   } else {
-    list(data = spelling, subdir = FALSE)
+    spelling
   }
 }
 
 env_key <- function(path, subdir) {
-  env_layout(path, subdir)$data
+  env_data_file(path, subdir)
 }
 
 #' Close an MDBX environment
@@ -271,9 +276,9 @@ check_mode <- function(x) {
 # and happily creates one inside -- so `create = FALSE` used to create a
 # database in any existing empty directory.
 # An environment exists where its data file does. The layout decides which file
-# that is, and env_layout() is the one place that decides it -- see there.
+# that is, and env_data_file() is the one place that decides it -- see there.
 env_exists <- function(path) {
-  file.exists(env_layout(path)$data)
+  file.exists(env_data_file(path))
 }
 
 check_string <- function(x, arg) {

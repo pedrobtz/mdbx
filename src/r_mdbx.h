@@ -28,6 +28,12 @@ long current_pid();
 // `spelling`. Defined in r_mdbx.cpp, where the reasoning is.
 std::string env_key_for(const std::string &spelling);
 
+// Test-only: make the next guarded open or close raise a libmdbx panic. Both
+// panics are otherwise unreachable from R, and both leave a path this package
+// has to go on claiming, so the suite needs a way in. Nothing else calls these.
+void arm_open_panic();
+void arm_close_panic();
+
 // R's Rboolean, spelled without the TRUE/FALSE tokens.
 //
 // mdbx.h includes <windows.h>, whose windef.h defines TRUE and FALSE as plain

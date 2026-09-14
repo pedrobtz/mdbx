@@ -149,7 +149,11 @@ mdbx_dbi_drop <- function(txn, db, delete = FALSE) {
   # So refuse while there is anything to lose. Emptying main is exactly as safe
   # as it sounds once no named database is riding on it, and that case stays
   # allowed.
-  if (length(name) == 0L && !delete) {
+  # Only for a write transaction. A read one is refused by the native layer for
+  # being read-only, which is the problem it actually has -- and checking here
+  # first named the other one, so the two halves of this function disagreed
+  # about what was wrong with the same call.
+  if (length(name) == 0L && !delete && isTRUE(attr(txn, "write"))) {
     named <- mdbx_dbi_list_(txn)
     if (length(named) > 0L) {
       stop(sprintf(paste0(
@@ -249,6 +253,16 @@ db_name <- function(db, txn) {
       "must each be a single non-empty string. Use mdbx_dbi_open() to obtain ",
       "one, or NULL for the main database"
     ), call. = FALSE)
+  }
+
+  # A `txn` that is not a transaction is not this function's to complain about.
+  # It gets here because R forces db_name(db, txn) before the native entry point
+  # can check its own argument, and comparing a handle against the attributes of
+  # something that has none produced a message about the database handle for
+  # what is really a bad `txn` -- an empty one, in fact, since sprintf() with a
+  # NULL argument returns character(0) and stop() then raises no text at all.
+  if (!inherits(txn, "mdbx_txn")) {
+    return(name)
   }
 
   if (!identical(token, attr(txn, "token"))) {
