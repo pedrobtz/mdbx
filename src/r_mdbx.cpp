@@ -457,6 +457,17 @@ void arm_open_panic() { panic_next_open = true; }
 
 void arm_close_panic(env_handle *handle) { panic_close_target = handle; }
 
+// Drop an armed target that is about to stop existing, or that the close is
+// leaving by a path close_call never reaches -- already closed, inherited
+// across a fork, or poisoned. A raw pointer left armed outlives the handle the
+// finalizer frees, and the next env_handle the allocator puts at that address
+// compares equal to it: an unrelated environment would raise a fabricated panic
+// on close and have its path claimed for the session.
+void forget_panic_target(const env_handle *handle) {
+  if (panic_close_target == handle)
+    panic_close_target = nullptr;
+}
+
 namespace {
 
 void open_call(void *data) {
@@ -876,8 +887,10 @@ void mark_finished(txn_handle *handle, txn_state state) {
 // mdbx_close(), which should surface a failure as an R condition, and the
 // finalizer, which runs during GC where raising is not an option.
 void close_handle(env_handle *handle, bool propagate) {
-  if (handle->env == nullptr)
+  if (handle->env == nullptr) {
+    forget_panic_target(handle);
     return;
+  }
 
   // Every path below detaches the environment from the handle, so the path it
   // occupied is free from here on however this call ends.
@@ -887,6 +900,7 @@ void close_handle(env_handle *handle, bool propagate) {
   // and lock, from a process that never held them. Drop our copy of the pointer
   // and leave the environment to the process that owns it.
   if (handle->pid != current_pid()) {
+    forget_panic_target(handle);
     handle->env = nullptr;
     if (propagate)
       cpp11::stop("this mdbx environment belongs to process %ld and cannot be "
@@ -903,6 +917,7 @@ void close_handle(env_handle *handle, bool propagate) {
   // stays taken for the life of the process. unregister_env() above has already
   // given it up, so record the key separately -- see poisoned_keys.
   if (handle->poisoned) {
+    forget_panic_target(handle);
     retain_poisoned_handle(handle);
     handle->env = nullptr;
     return;
@@ -921,9 +936,18 @@ void close_handle(env_handle *handle, bool propagate) {
   // free is the answer that ends in a bare errno or a hang. Unconditional,
   // because the finalizer reaches here too and a GC-time panic loses the path
   // just as thoroughly as an explicit close does.
-  if (result != MDBX_R_GUARD_OK)
+  // Two ways the environment can survive this call. A panic leaves libmdbx's
+  // state unknown. A non-success status -- MDBX_BUSY, MDBX_EBADSIGN -- is
+  // libmdbx returning *before* it destroys the environment, so the lock file,
+  // the reader slot and the descriptors are all still held. Either way
+  // unregister_env() above has given the path up and handle->env is about to be
+  // cleared, so nothing would be left pointing at what libmdbx still owns.
+  // Claim it: reporting the path free is how the next open meets a bare errno,
+  // or blocks on a lock this process will never release.
+  if (result != MDBX_R_GUARD_OK || context.rc != MDBX_SUCCESS)
     retain_poisoned_handle(handle);
 
+  forget_panic_target(handle);
   handle->env = nullptr;
 
   if (!propagate)
@@ -969,6 +993,7 @@ void finalize_env(SEXP ptr) {
   R_ClearExternalPtr(ptr);
   detach_txns(handle);
   close_handle(handle, false);
+  forget_panic_target(handle);
   delete handle;
   --live_env_handles;
 }
@@ -1030,16 +1055,28 @@ cpp11::sexp new_env_sexp(env_handle *handle, const std::string &path,
                          bool readonly, bool subdir) {
   SEXP ptr = PROTECT(R_MakeExternalPtr(handle, env_tag(), R_NilValue));
 
-  // r_true, not TRUE: see the note on Windows macro shadowing in r_mdbx.h.
-  // Registering with onexit runs the finalizer at R shutdown as well as on GC.
-  R_RegisterCFinalizerEx(ptr, finalize_env, r_true);
-  ++live_env_handles;
+  // Attributes first, finalizer last, so that the ownership handover is a
+  // single point rather than a window.
+  //
+  // Every one of these allocates and can therefore raise under memory
+  // pressure. Registering the finalizer first meant a throw from any of them
+  // left an external pointer that owned the handle -- so the caller could not
+  // clean up after the throw without racing the finalizer into a double free,
+  // and not cleaning up leaks an open environment holding its lock file. With
+  // the registration last, a throw from anything above it leaves an external
+  // pointer that owns nothing, and the caller's catch is the only owner.
   Rf_setAttrib(ptr, Rf_install("path"), Rf_mkString(path.c_str()));
   Rf_setAttrib(ptr, Rf_install("readonly"), Rf_ScalarLogical(readonly));
   Rf_setAttrib(ptr, Rf_install("subdir"), Rf_ScalarLogical(subdir));
   Rf_setAttrib(ptr, Rf_install("token"),
                Rf_mkString(next_env_token().c_str()));
   Rf_classgets(ptr, Rf_mkString("mdbx_env"));
+
+  // r_true, not TRUE: see the note on Windows macro shadowing in r_mdbx.h.
+  // Registering with onexit runs the finalizer at R shutdown as well as on GC.
+  // Nothing below this may throw.
+  R_RegisterCFinalizerEx(ptr, finalize_env, r_true);
+  ++live_env_handles;
 
   UNPROTECT(1);
   return ptr;
@@ -1316,11 +1353,33 @@ cpp11::sexp mdbx_env_open_(std::string path, std::string spelling, bool readonly
   // file on disk. The path key does not change.
   handle->key = mdbx_r::env_keys_for(spelling).identity;
 
-  // Registered only once the external pointer exists, so that a failure to
-  // build it cannot leave the registry holding an address nothing will free.
+  // Registered before the external pointer exists, and unregistered again if
+  // building it throws.
+  //
+  // The other order was chosen so that a failure could not leave the registry
+  // holding an address nothing would free -- but it traded that for something
+  // worse. new_env_sexp() allocates an external pointer, four attributes and a
+  // class string, any of which can raise under memory pressure, and past
+  // handle.release() the environment is then owned by nobody: still open, still
+  // holding the lock file for the life of the process, and in no registry, so
+  // the next open of that path walks past the check and meets libmdbx. The
+  // catch below gives back the registry entry *and* closes the environment,
+  // which is safe only because new_env_sexp() registers its finalizer last:
+  // anything that throws in there leaves an external pointer owning nothing, so
+  // this is the sole owner and there is no finalizer to race into a double
+  // free.
   mdbx_r::env_handle *raw = handle.release();
-  cpp11::sexp env = mdbx_r::new_env_sexp(raw, path, readonly, actual_subdir);
   mdbx_r::register_env(raw);
+
+  cpp11::sexp env;
+  try {
+    env = mdbx_r::new_env_sexp(raw, path, readonly, actual_subdir);
+  } catch (...) {
+    mdbx_r::unregister_env(raw);
+    mdbx_r::close_handle(raw, false);
+    delete raw;
+    throw;
+  }
 
   return env;
 }
@@ -1553,44 +1612,6 @@ void mdbx_txn_abort_(cpp11::sexp txn) {
   finish_txn(txn, false);
 }
 
-namespace {
-
-struct flags_context {
-  mdbx_r::txn_handle *handle;
-  unsigned flags;
-};
-
-void flags_call(void *data) {
-  flags_context *context = static_cast<flags_context *>(data);
-  context->flags =
-      static_cast<unsigned>(mdbx_txn_flags(context->handle->txn));
-}
-
-void poison_flags(void *data) {
-  mdbx_r::poison_txn(static_cast<flags_context *>(data)->handle);
-}
-
-// Whether libmdbx has marked this transaction errored -- MDBX_MAP_FULL above
-// all. Every later operation on one then fails with MDBX_BAD_TXN, and its
-// commit reports a rollback.
-//
-// Routed through guard() like every other libmdbx call that touches a
-// transaction. ASSERT() inside mdbx_txn_flags() compiles out at this package's
-// MDBX_CHECKING, so an unguarded call is not reachable in the shipped build --
-// but a vendor bump, a sanitizer leg or MDBX_FORCE_ASSERTIONS would make it so,
-// and a panic arriving with no poison callback leaves neither the transaction
-// nor the environment marked. The environment's finalizer would then re-enter
-// libmdbx to close a handle whose invariants had already failed.
-bool txn_has_error(mdbx_r::txn_handle *handle) {
-  if (handle == nullptr || handle->txn == nullptr)
-    return false;
-
-  flags_context context = {handle, 0};
-  mdbx_r::guard(flags_call, &context, poison_flags);
-  return (context.flags & MDBX_TXN_ERROR) != 0;
-}
-
-} // namespace
 
 [[cpp11::register]]
 std::string mdbx_txn_state_(cpp11::sexp txn) {
@@ -1627,8 +1648,20 @@ std::string mdbx_txn_state_(cpp11::sexp txn) {
 
   switch (handle->state) {
   case mdbx_r::txn_state::active:
-    // "active" was the one thing a transaction libmdbx has errored is not.
-    if (txn_has_error(handle))
+    // libmdbx sets MDBX_TXN_ERROR when an operation failed in a way the
+    // transaction cannot continue from -- MDBX_MAP_FULL above all. Every later
+    // operation then fails with MDBX_BAD_TXN and the commit reports a rollback,
+    // so "active" was the one thing this was not.
+    //
+    // Read directly, not through guard(). This function is documented to return
+    // one of five strings and never to raise -- print.mdbx_txn() calls it, and
+    // it is the safe way to interrogate a handle whose state is unknown. Routing
+    // it through guard() gave it a poison callback, so a panic here would have
+    // raised from a pure query *and* marked the environment unusable. The
+    // ASSERT() inside mdbx_txn_flags() compiles out at this package's
+    // MDBX_CHECKING, so there is no panic for the guard to catch anyway.
+    if (handle->txn != nullptr &&
+        (mdbx_txn_flags(handle->txn) & MDBX_TXN_ERROR) != 0)
       return "failed";
     return "active";
   case mdbx_r::txn_state::committed:
@@ -1880,28 +1913,25 @@ cpp11::list run_info(mdbx_r::env_handle *owner, MDBX_txn *txn) {
 // with MDBX_BAD_RSLOT. Reusing the live transaction avoids the collision, and
 // makes the environment and transaction forms report the same thing -- which
 // is what the documentation has always claimed they do.
-// An errored transaction is skipped, so that an environment-level query is not
-// answered with MDBX_BAD_TXN -- mdbx_env_stat(env) failed that way while
-// mdbx_env_info(env) beside it succeeded, though the two are documented as
-// reporting one snapshot and neither was asked about the transaction. Skipped
-// means falling back to a null transaction, and both then report the last
-// committed state, which is what an environment-level query means.
+// A live transaction is reused whatever state libmdbx has put it in, including
+// MDBX_TXN_ERROR.
 //
-// Only a *write* transaction, though. Falling back to null is exactly what the
-// paragraph above says must not happen while this thread holds a read
-// transaction: libmdbx starts an internal read of its own and collides with
-// the reader slot already taken. A write transaction holds no reader slot, so
-// the internal read is free to proceed -- and a read transaction cannot carry
-// MDBX_TXN_ERROR anyway, since nothing a read does sets it. If one ever could,
-// reusing it and reporting MDBX_BAD_TXN is the lesser of the two failures, and
-// the honest one.
+// Skipping an errored one looks tempting, because mdbx_env_stat(env) then
+// reports MDBX_BAD_TXN while mdbx_env_info(env) beside it succeeds. It does not
+// work: passing null does not reach the committed snapshot the way the two
+// comments above would suggest. mdbx_env_stat_ex() calls env_owned_wrtxn() and
+// picks the very same errored transaction back up, bypassing its own check,
+// while mdbx_env_info_ex() reads the head meta page -- so the two diverge
+// further than they did to begin with, and stat's answer then depends on an
+// internal libmdbx shortcut a version bump could remove.
+//
+// Reporting the failure is the honest answer: the transaction really has
+// failed, and an environment-level query cannot see past it while it is open.
+// Abort it and both queries answer again.
 MDBX_txn *current_txn(mdbx_r::env_handle *handle) {
   for (mdbx_r::txn_handle *txn : handle->live_txns) {
-    if (txn->txn == nullptr)
-      continue;
-    if (txn->write && txn_has_error(txn))
-      continue;
-    return txn->txn;
+    if (txn->txn != nullptr)
+      return txn->txn;
   }
   return nullptr;
 }
@@ -2239,23 +2269,32 @@ struct count_context {
   int rc;
 };
 
+// Stops at the first one. Only whether any exist decides the refusal, and
+// counting them all walks every record of the main database -- which on a main
+// database holding millions of keys is a full tree scan paid by the common
+// case, to learn there is nothing to refuse. A non-zero return ends the
+// enumeration, and mdbx_enumerate_tables() hands that value back.
 int count_visit(void *ctx, const MDBX_txn *, const MDBX_val *,
                 MDBX_db_flags_t, const struct MDBX_stat *,
                 MDBX_dbi) MDBX_CXX17_NOEXCEPT {
-  ++static_cast<count_context *>(ctx)->count;
-  return 0;
+  static_cast<count_context *>(ctx)->count = 1;
+  return MDBX_RESULT_TRUE;
 }
 
 void count_call(void *data) {
   count_context *context = static_cast<count_context *>(data);
   context->rc = mdbx_enumerate_tables(context->handle->txn, count_visit, context);
+
+  // The visitor's own stop signal, not a failure.
+  if (context->rc == MDBX_RESULT_TRUE)
+    context->rc = MDBX_SUCCESS;
 }
 
 void poison_count(void *data) {
   mdbx_r::poison_txn(static_cast<count_context *>(data)->handle);
 }
 
-// How many named databases this transaction can see.
+// Whether this transaction can see any named database.
 int count_named_tables(mdbx_r::txn_handle *handle) {
   count_context context = {handle, 0, MDBX_SUCCESS};
   mdbx_r::guard(count_call, &context, poison_count);
@@ -2286,16 +2325,11 @@ void mdbx_dbi_drop_(cpp11::sexp txn, cpp11::strings db, bool del) {
   // `write` attribute on the external pointer, which R code can rewrite in
   // place -- so the guard could be switched off with `attr(txn, "write") <-
   // FALSE` and the purge went through. handle->write is the transaction's own.
-  if (!del && db.size() == 0) {
-    const int named = count_named_tables(handle);
-    if (named > 0)
-      cpp11::stop("emptying the main database would also destroy the %d named "
-                  "database(s) in this environment, because each one is a "
-                  "record in the main database. Drop them by name first if "
-                  "that is what you want, or delete the main database's keys "
-                  "individually",
-                  named);
-  }
+  if (!del && db.size() == 0 && count_named_tables(handle) > 0)
+    cpp11::stop("emptying the main database would also destroy the named "
+                "databases in this environment, because each one is a record "
+                "in the main database. Drop them by name first if that is what "
+                "you want, or delete the main database's keys individually");
 
   // The main database cannot be deleted -- it is where the named ones are
   // recorded, so an environment without it is not an environment. libmdbx does

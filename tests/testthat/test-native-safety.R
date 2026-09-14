@@ -304,6 +304,31 @@ test_that("an environment abandoned to the collector does not eat an armed panic
   expect_error(mdbx_env_close(env), "libmdbx assertion failed")
 })
 
+test_that("an armed close panic is dropped when the close never reaches it", {
+  # panic_close_target is a raw handle pointer, and close_handle() returns
+  # before close_call on three paths -- already closed, inherited across a fork,
+  # and poisoned. Left armed, it outlives the handle the finalizer frees, and
+  # the next env_handle the allocator puts at that address compares equal to it:
+  # an unrelated environment would raise a fabricated panic on close and have
+  # its path claimed for the session.
+  env <- mdbx_env_open(env_path(), map_size = test_map_size)
+  mdbx:::mdbx_test_arm_close_panic_(env)
+
+  # Poison it, so the close takes the branch that returns before close_call.
+  expect_error(mdbx:::mdbx_test_panic_stat_(env, FALSE), "libmdbx assertion failed")
+  mdbx_env_close(env)
+  rm(env)
+  gc()
+  gc()
+
+  # Nothing is armed any more, so ordinary environments close normally.
+  for (i in 1:5) {
+    other <- mdbx_env_open(env_path(), map_size = test_map_size)
+    expect_silent(mdbx_env_close(other))
+    expect_false(mdbx_env_is_open(other))
+  }
+})
+
 test_that("a panic raised by the open claims the path it may have taken", {
   # Nothing pointed at the half-built environment once the unique_ptr let go of
   # the handle struct, so if libmdbx had taken the lock file before it panicked

@@ -123,7 +123,7 @@ test_that("a close refused for an open transaction keeps the path taken", {
 })
 
 test_that("a directory-layout environment is refused the same way", {
-  dir <- file.path(tempdir(), sprintf("dup-%d", sample.int(1e6, 1)))
+  dir <- tempfile("dup-")
 
   env <- mdbx_env_open(dir, subdir = TRUE, map_size = test_map_size)
   expect_error(mdbx_env_open(dir, map_size = test_map_size),
@@ -134,8 +134,8 @@ test_that("a directory-layout environment is refused the same way", {
 })
 
 test_that("two spellings of one path are one environment", {
-  # env_key() canonicalises the directory, and env_key_for() keys what it names
-  # by identity. Without them each of these reaches libmdbx, which coordinates
+  # env_data_file() canonicalises the directory, and env_keys_for() keys what it
+  # names by identity. Without them each reaches libmdbx, which coordinates
   # through a lock file named after the path -- so a second name gets a second
   # lock file, and then blocks forever on a lock this same single-threaded
   # process is the one holding.
@@ -234,7 +234,7 @@ test_that("an environment reached by a hard-linked data file is the same one", {
 })
 
 test_that("an environment reached by a symlinked data file is the same one", {
-  # The other case canonicalising cannot reach: env_key() resolves the directory
+  # The other case canonicalising cannot reach: env_data_file() resolves the dir
   # and carries the basename over untouched, so a symlink at the final component
   # went straight past the registry.
   #
@@ -349,14 +349,20 @@ test_that("the registry of open paths does not grow", {
   # gc() first, as the live-handle tests below do: environments other tests
   # abandoned are still registered until their finalizers run, and the baseline
   # has to be taken once they have.
+  # Bounds, not equalities, against a count that is process-wide. R does not
+  # promise that any number of gc() calls runs a given finalizer, and the suite
+  # abandons environments everywhere -- so a baseline taken here can be met by
+  # an unrelated finalizer running mid-loop, failing an assertion about
+  # environments this test never touched. A leak can only push the count up,
+  # which is what this is here to catch.
   gc()
   before <- mdbx:::mdbx_env_open_count_()
 
   for (i in 1:5) {
     env <- mdbx_env_open(env_path(), map_size = test_map_size)
-    expect_identical(mdbx:::mdbx_env_open_count_(), before + 1L)
+    expect_lte(mdbx:::mdbx_env_open_count_(), before + 1L)
     mdbx_env_close(env)
-    expect_identical(mdbx:::mdbx_env_open_count_(), before)
+    expect_lte(mdbx:::mdbx_env_open_count_(), before)
   }
 
   # Including the ones nobody closed, and the ones that never opened.
@@ -366,7 +372,16 @@ test_that("the registry of open paths does not grow", {
   gc()
   gc()
 
-  expect_identical(mdbx:::mdbx_env_open_count_(), before)
+  expect_lte(mdbx:::mdbx_env_open_count_(), before)
+
+  # The invariant the count cannot express on its own, and this one is exact: a
+  # path a closed environment held is free for the next open.
+  path <- env_path()
+  first <- mdbx_env_open(path, map_size = test_map_size)
+  mdbx_env_close(first)
+  second <- mdbx_env_open(path, map_size = test_map_size)
+  expect_true(mdbx_env_is_open(second))
+  mdbx_env_close(second)
 })
 
 test_that("an environment collected without an explicit close frees its path", {
@@ -412,7 +427,7 @@ test_that("an existing directory is not an existing environment", {
   # file.exists() is TRUE for a bare directory, and libmdbx detects the
   # directory layout and creates a database inside it -- so `create = FALSE`
   # used to create one anyway. An environment exists only if mdbx.dat does.
-  dir <- file.path(tempdir(), sprintf("empty-%d", sample.int(1e6, 1)))
+  dir <- tempfile("empty-")
   dir.create(dir)
 
   expect_error(mdbx_env_open(dir, create = FALSE), "create = FALSE", fixed = TRUE)
@@ -426,7 +441,7 @@ test_that("an existing directory is not an existing environment", {
 })
 
 test_that("the layout reported is the one in use, not the one requested", {
-  dir <- file.path(tempdir(), sprintf("layout-%d", sample.int(1e6, 1)))
+  dir <- tempfile("layout-")
   mdbx_env_close(mdbx_env_open(dir, subdir = TRUE))
 
   # Reopened with the default subdir = FALSE, but libmdbx detects the directory

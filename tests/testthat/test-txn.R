@@ -39,27 +39,32 @@ test_that("state reports usability, not just whether a handle is allocated", {
   mdbx_env_close(env)
 })
 
-test_that("an environment query does not borrow a failed transaction", {
-  # Both entry points are documented as reporting one snapshot of the
-  # environment, and neither was asked about the transaction. Reusing an errored
-  # one answered mdbx_env_stat(env) with a raw MDBX_BAD_TXN while
-  # mdbx_env_info(env) beside it still succeeded.
+test_that("an environment query reports a failed transaction rather than hiding it", {
+  # An environment-level query reuses whatever transaction this thread holds,
+  # because passing null makes libmdbx start an internal read that collides with
+  # a reader slot already taken. So while a failed transaction is open, a query
+  # through it reports that failure -- and that is the honest answer rather than
+  # a gap to paper over.
+  #
+  # Skipping the errored transaction was tried and reverted: passing null does
+  # not reach the committed snapshot the way it looks like it should.
+  # mdbx_env_stat_ex() calls env_owned_wrtxn() and picks the same errored
+  # transaction back up while mdbx_env_info_ex() reads the head meta page, so
+  # the two diverge further than they did before -- and stat's answer then rests
+  # on an internal libmdbx shortcut a version bump could remove.
   env <- mdbx_env_open(env_path(), map_size = 1024^2)
   txn <- mdbx_txn_begin(env, write = TRUE)
 
-  # As above: the class, not the status, for the same portability reason.
   expect_error(mdbx_put(txn, "k", strrep("v", 4e6)), class = "mdbx_error")
   expect_identical(mdbx_txn_state(txn), "failed")
 
+  expect_error(mdbx_env_stat(env), class = "mdbx_error")
+
+  # Aborting it is what restores the environment-level query.
+  mdbx_txn_abort(txn)
   expect_type(mdbx_env_stat(env), "list")
   expect_type(mdbx_env_info(env), "list")
 
-  # Asking *about* the transaction still reports the transaction's own failure:
-  # it is only the environment-level question that stops borrowing it.
-  expect_error(mdbx_env_stat(txn), class = "mdbx_error")
-
-  mdbx_txn_abort(txn)
-  expect_type(mdbx_env_stat(env), "list")
   mdbx_env_close(env)
 })
 

@@ -46,7 +46,7 @@ new_mdbx_model <- function() {
     # Environments this process has open, by label. Each records which
     # environment it *denotes*: the generator builds several spellings of one
     # path, so two labels can name the same database. That is the model's own
-    # knowledge, by construction, not a re-derivation of env_key().
+    # knowledge, by construction, not a re-derivation of env_data_file().
     envs = list(),
     committed = list(),
     txn = NULL

@@ -153,6 +153,7 @@ struct txn_handle {
 // environment. Nothing outside the suite calls these.
 void arm_open_panic();
 void arm_close_panic(env_handle *handle);
+void forget_panic_target(const env_handle *handle);
 
 // Translate a non-success MDBX status into an R condition, preserving the
 // original code. Statuses that are not errors -- MDBX_NOTFOUND above all --

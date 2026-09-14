@@ -173,22 +173,26 @@ Canonicalising the path was the first answer and is not sufficient. `normalizePa
 one inode, and no string transformation relates the two. Keying by identity subsumes symlink
 resolution for free, and costs one `stat()` per open.
 
-Identity is not knowable before the file exists, which `create = TRUE` routinely means. So the
-registry check uses the canonical spelling as a fallback key — prefixed apart so it cannot compare
-equal to an identity — and the environment is re-keyed from its data file once the open has made
-one.
+Identity alone is not enough, though, and the first attempt at this used it alone and reintroduced
+the very hang it was meant to prevent. Identity is not stable against the file going away: unlink an
+open environment's data file and `stat()` can no longer answer for that path, so an open aimed at it
+misses an incumbent keyed by identity and reaches libmdbx — which still holds the lock file *named
+after the path* and blocks on it forever in this same single-threaded process.
 
-The same fallback covers a filesystem that keeps no file index -- FAT and exFAT do not, and nor do
-some network redirectors -- where an identity would otherwise be all zeros and collapse every file
-on the volume onto one key. There the keying degrades to exactly what it was before identity:
-equal for equal spellings, blind to links, which those filesystems do not have anyway.
+So an environment carries **two** keys, and a match on either is a match: the data file's identity,
+and the canonical spelling. The path key also covers the case where the data file has been replaced
+rather than merely unlinked, which is a genuine conflict — the replacement would share the lock file
+the incumbent still holds — and the case of a filesystem that keeps no file index at all (FAT and
+exFAT do not, nor do some network redirectors), where identity would otherwise come back all zeros
+and collapse every file on the volume onto one key.
 
-Neither fallback can *invent* a collision, since the two kinds of key are prefixed apart and a
-given data file yields the same kind on every call. Missing one is the pre-existing behaviour.
+Identity is also not knowable before the file exists, which `create = TRUE` routinely means, so the
+keys are computed before the open — every way out of `mdbx_env_open_()` needs them, including the
+cleanup close — and the identity is recomputed once the open has created the file.
 
-`R/env.R`'s `env_key()` therefore settles only *which file* a path names — the `mdbx.dat` inside a
-directory-layout environment, or the path itself — and `env_key_for()` in `src/r_mdbx.cpp` turns
-that into the key.
+`R/env.R`'s `env_data_file()` settles only *which file* a path names — the `mdbx.dat` inside a
+directory-layout environment, or the path itself — and `env_keys_for()` in `src/r_mdbx.cpp` turns
+that into the pair.
 
 ### Recognising an environment across its own replacement — **settled in the package review**
 

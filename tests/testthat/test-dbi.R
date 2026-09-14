@@ -400,7 +400,7 @@ test_that("the main database can be emptied but not deleted", {
   # Emptying is refused too while a named database would go with it. libmdbx
   # purges the whole main tree, and the named databases *are* records in it.
   mdbx_with_write(env, function(txn) {
-    expect_error(mdbx_dbi_drop(txn, NULL), "would also destroy the 1 named database")
+    expect_error(mdbx_dbi_drop(txn, NULL), "would also destroy the named databases")
   })
 
   mdbx_with_read(env, function(txn) {

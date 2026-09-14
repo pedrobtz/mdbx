@@ -117,7 +117,7 @@ mdbx_env_open <- function(path,
     )
   }
 
-  mdbx_env_open_(path, env_key(path, subdir), readonly, subdir, max_dbs,
+  mdbx_env_open_(path, env_data_file(path, subdir), readonly, subdir, max_dbs,
                  map_size, max_readers, mode, flags)
 }
 
@@ -126,7 +126,7 @@ mdbx_env_open <- function(path,
 # collide there instead of reaching libmdbx and hanging on its lock file.
 #
 # Only the spelling is settled here. Relating two *different* names for one
-# environment is env_key_for()'s job in src/r_mdbx.cpp, and it does it by the
+# environment is env_keys_for()'s job in src/r_mdbx.cpp, and it does it by the
 # file's identity rather than by its name -- a hard link is one file under two
 # names, and no amount of string work relates those. So resolving symlinks here
 # would buy nothing this does not already get for free.
@@ -173,10 +173,6 @@ env_data_file <- function(path, subdir = FALSE) {
   } else {
     spelling
   }
-}
-
-env_key <- function(path, subdir) {
-  env_data_file(path, subdir)
 }
 
 #' Close an MDBX environment
