@@ -176,8 +176,15 @@ resolution for free, and costs one `stat()` per open.
 Identity is not knowable before the file exists, which `create = TRUE` routinely means. So the
 registry check uses the canonical spelling as a fallback key — prefixed apart so it cannot compare
 equal to an identity — and the environment is re-keyed from its data file once the open has made
-one. The fallback cannot hide a collision: every environment in the registry has been opened, so
-its data file is on disk and its key is an identity.
+one.
+
+The same fallback covers a filesystem that keeps no file index -- FAT and exFAT do not, and nor do
+some network redirectors -- where an identity would otherwise be all zeros and collapse every file
+on the volume onto one key. There the keying degrades to exactly what it was before identity:
+equal for equal spellings, blind to links, which those filesystems do not have anyway.
+
+Neither fallback can *invent* a collision, since the two kinds of key are prefixed apart and a
+given data file yields the same kind on every call. Missing one is the pre-existing behaviour.
 
 `R/env.R`'s `env_key()` therefore settles only *which file* a path names — the `mdbx.dat` inside a
 directory-layout environment, or the path itself — and `env_key_for()` in `src/r_mdbx.cpp` turns

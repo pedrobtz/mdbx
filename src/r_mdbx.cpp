@@ -152,6 +152,15 @@ bool file_identity(const std::string &path, std::string &out) {
   if (!ok)
     return false;
 
+  // A file index of zero means the filesystem does not keep one -- FAT and
+  // exFAT do not, and some network redirectors do not either. Reporting it as
+  // an identity would give every file on such a volume the same key, and the
+  // first environment opened there would refuse every later one as itself.
+  // Say there is no identity instead and let the caller key by path: that is
+  // no worse than this function not existing, which is what it was before.
+  if (info.nFileIndexHigh == 0 && info.nFileIndexLow == 0)
+    return false;
+
   char buffer[80];
   std::snprintf(buffer, sizeof buffer, "id:%lu:%lu:%lu",
                 static_cast<unsigned long>(info.dwVolumeSerialNumber),
@@ -195,11 +204,15 @@ bool file_identity(const std::string &path, std::string &out) {
 // canonical spelling only where it cannot, which is a data file that does not
 // exist yet.
 //
-// That fallback cannot hide a collision. Every environment in the registry has
-// been opened, so its data file is on disk and its key is an identity; a
-// spelling that resolves to nothing names no environment anyone could already
-// have open. The two kinds of key are prefixed apart so they cannot compare
-// equal by accident.
+// The fallback is also what a filesystem with no usable identity gets -- FAT
+// and exFAT keep no file index -- and there the keying is exactly what it was
+// before identity: equal for equal spellings, blind to links. Nothing is lost,
+// since those filesystems have no links to be blind to.
+//
+// Either way the fallback cannot hide a collision, because two keys only ever
+// compare equal within their own kind: the prefixes keep them apart, and a
+// given data file yields the same kind on every call, identity or not. What it
+// can do is miss one, which is the pre-existing behaviour and not a new hazard.
 //
 // Identity is not knowable before the file exists, so an environment created by
 // its own open is keyed from the spelling for the registry check and re-keyed
