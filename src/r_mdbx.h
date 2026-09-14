@@ -24,15 +24,15 @@ namespace mdbx_r {
 // returning an error. The check therefore has to happen above libmdbx.
 long current_pid();
 
-// The open registry's key for the environment whose data file is spelled
-// `spelling`. Defined in r_mdbx.cpp, where the reasoning is.
-std::string env_key_for(const std::string &spelling);
+// The open registry's keys for the environment whose data file is spelled
+// `spelling`: its identity, empty when the filesystem supplies none, and its
+// canonical path. Defined in r_mdbx.cpp, where the reasoning is.
+struct env_keys {
+  std::string identity;
+  std::string path;
+};
 
-// Test-only: make the next guarded open or close raise a libmdbx panic. Both
-// panics are otherwise unreachable from R, and both leave a path this package
-// has to go on claiming, so the suite needs a way in. Nothing else calls these.
-void arm_open_panic();
-void arm_close_panic();
+env_keys env_keys_for(const std::string &spelling);
 
 // R's Rboolean, spelled without the TRUE/FALSE tokens.
 //
@@ -74,10 +74,21 @@ struct env_handle {
 
   // How this environment is known to the open registry in r_mdbx.cpp, which
   // uses it to refuse -- and name -- a second open of the same environment in
-  // this process. Not the path R was given, and not a canonical spelling of it
-  // either: env_key_for() keys an environment by its data file's identity, so
-  // that a hard link collides here as surely as a second spelling does.
+  // this process. Two keys, and a match on either is a match.
+  //
+  // `key` is the data file's identity -- (device, inode), or the Windows
+  // equivalent -- which is what makes a hard link collide here as surely as a
+  // second spelling of one path does. It is empty on a filesystem that keeps no
+  // file index.
+  //
+  // `path_key` is the canonical spelling, and exists because identity is not
+  // stable against the file going away. Unlink an open environment's data file
+  // and the identity can no longer be computed from the path, so an open aimed
+  // at it would miss an incumbent keyed by identity alone -- and reach libmdbx,
+  // which still holds the lock file named after that path and blocks on it
+  // forever. The lock file is named after the path, so the path has to be a key.
   std::string key;
+  std::string path_key;
 
   // The path the caller wrote, kept so the refusal can name the spelling the
   // incumbent was opened under when it differs from the one being refused.
@@ -133,6 +144,15 @@ struct txn_handle {
   // the environment closes, bounded by max_dbs.
   std::vector<std::pair<std::string, MDBX_dbi>> named;
 };
+
+// Test-only: make the next guarded open, or the close of one named environment,
+// raise a libmdbx panic. Both panics are otherwise unreachable from R, and both
+// leave a path this package has to go on claiming, so the suite needs a way in.
+// The close is aimed at a handle because close_call is reached from finalizers
+// too, and a GC-triggered one would otherwise eat a flag meant for another
+// environment. Nothing outside the suite calls these.
+void arm_open_panic();
+void arm_close_panic(env_handle *handle);
 
 // Translate a non-success MDBX status into an R condition, preserving the
 // original code. Statuses that are not errors -- MDBX_NOTFOUND above all --

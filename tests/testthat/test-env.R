@@ -256,6 +256,34 @@ test_that("an environment reached by a symlinked data file is the same one", {
                "already open in this process")
 })
 
+test_that("an environment whose data file was unlinked is still found", {
+  # Identity is not stable against the file going away. Keyed by identity alone,
+  # an open aimed at the unlinked path missed the incumbent and reached libmdbx
+  # -- which still holds the lock file named after that path, and blocks on it
+  # forever in this same single-threaded process. The path is a key for exactly
+  # this reason.
+  skip_on_os("windows")
+
+  path <- env_path()
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  mdbx_with_write(env, function(txn) mdbx_put(txn, "k", "v"))
+
+  unlink(path)
+  expect_false(file.exists(path))
+
+  expect_error(mdbx_env_open(path, map_size = test_map_size),
+               "already open in this process")
+
+  # A file recreated at the path is the same conflict, not a different one: it
+  # would share the lock file the incumbent still holds.
+  writeLines("not a database", path)
+  expect_error(mdbx_env_open(path, map_size = test_map_size),
+               "already open in this process")
+
+  mdbx_env_close(env)
+  unlink(c(path, paste0(path, "-lck")))
+})
+
 test_that("an alias is openable once the environment it aliases is closed", {
   # Keying by identity must not leave a spelling permanently spoken for.
   skip_on_os("windows")

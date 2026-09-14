@@ -263,7 +263,11 @@ test_that("a panic raised by the close itself claims the path too", {
   path <- env_path()
   env <- mdbx_env_open(path, map_size = test_map_size)
 
-  mdbx:::mdbx_test_arm_close_panic_()
+  # Armed at this environment, not at "the next close": close_call is reached
+  # from finalizers too, so a GC between arming and closing would otherwise hand
+  # the panic to an environment an earlier test abandoned.
+  mdbx:::mdbx_test_arm_close_panic_(env)
+  gc()
   expect_error(mdbx_env_close(env), "libmdbx assertion failed")
 
   # The handle is spent either way.
@@ -279,6 +283,25 @@ test_that("a panic raised by the close itself claims the path too", {
   other <- mdbx_env_open(env_path(), map_size = test_map_size)
   expect_true(mdbx_env_is_open(other))
   mdbx_env_close(other)
+})
+
+test_that("an environment abandoned to the collector does not eat an armed panic", {
+  # The regression the arming change prevents: a global flag is consumed by
+  # whichever close runs first, and the suite leaves environments for the
+  # collector by design. Arm at one, collect others, and the armed one must
+  # still be the one that panics.
+  path <- env_path()
+  env <- mdbx_env_open(path, map_size = test_map_size)
+
+  # Abandoned without closing, exactly as local_env() does throughout the suite.
+  invisible(mdbx_env_open(env_path(), map_size = test_map_size))
+  invisible(mdbx_env_open(env_path(), map_size = test_map_size))
+
+  mdbx:::mdbx_test_arm_close_panic_(env)
+  gc()
+  gc()
+
+  expect_error(mdbx_env_close(env), "libmdbx assertion failed")
 })
 
 test_that("a panic raised by the open claims the path it may have taken", {

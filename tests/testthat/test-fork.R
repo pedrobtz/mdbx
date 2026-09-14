@@ -114,6 +114,30 @@ test_that("a refused close in a child leaves its transactions still refusing", {
   mdbx_env_close(env)
 })
 
+test_that("a poisoned path in the parent does not follow a fork", {
+  # poisoned_keys had no pid, while find_open_env() has always filtered by one.
+  # A child holds none of the parent's libmdbx state and none of its locks, so a
+  # path the parent lost is one the child may open -- exactly as it may open an
+  # environment the parent still holds.
+  skip_if_cannot_fork()
+
+  path <- env_path()
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  expect_error(mdbx:::mdbx_test_panic_stat_(env, FALSE), "libmdbx assertion failed")
+  mdbx_env_close(env)
+
+  # The parent is still locked out, which is the other half of the contract.
+  expect_error(mdbx_env_open(path, map_size = test_map_size),
+               "libmdbx assertion failure")
+
+  opened <- in_fork(function() {
+    child <- mdbx_env_open(path, map_size = test_map_size)
+    on.exit(mdbx_env_close(child))
+    mdbx_env_is_open(child)
+  })
+  expect_true(isTRUE(opened))
+})
+
 test_that("a child cannot close its parent's environment", {
   skip_if_cannot_fork()
 

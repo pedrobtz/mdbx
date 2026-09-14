@@ -115,16 +115,46 @@ std::vector<env_handle *> open_envs;
 // the lock file with a bare errno -- `mdbx error 35` on macOS -- or, on a
 // platform whose lock blocks rather than fails, hangs the session. That is the
 // exact failure the registry exists to make unreachable.
-std::vector<std::string> poisoned_keys;
+// Recorded with the pid that poisoned them, for the same reason find_open_env()
+// filters by one: a forked child holds none of the parent's libmdbx state and
+// none of its locks, so a path the parent lost is one the child may open.
+struct poisoned_path {
+  std::string identity;
+  std::string path;
+  long pid;
+};
 
-bool key_is_poisoned(const std::string &key) {
-  return std::find(poisoned_keys.begin(), poisoned_keys.end(), key) !=
-         poisoned_keys.end();
+std::vector<poisoned_path> poisoned_keys;
+
+bool keys_match(const std::string &identity, const std::string &path,
+                const env_keys &wanted) {
+  // Identity first, and only when both sides have one: it is the answer that
+  // sees through a hard link. The path catches what identity cannot, which is
+  // an incumbent whose data file has since been unlinked or replaced -- either
+  // way libmdbx still holds the lock file named after that path.
+  if (!identity.empty() && !wanted.identity.empty() &&
+      identity == wanted.identity)
+    return true;
+  return !path.empty() && path == wanted.path;
 }
 
-void retain_poisoned_key(const std::string &key) {
-  if (!key.empty() && !key_is_poisoned(key))
-    poisoned_keys.push_back(key);
+bool key_is_poisoned(const env_keys &wanted) {
+  const long pid = current_pid();
+  for (const poisoned_path &entry : poisoned_keys) {
+    if (entry.pid == pid && keys_match(entry.identity, entry.path, wanted))
+      return true;
+  }
+  return false;
+}
+
+void retain_poisoned_keys(const std::string &identity, const std::string &path) {
+  if (identity.empty() && path.empty())
+    return;
+  poisoned_keys.push_back(poisoned_path{identity, path, current_pid()});
+}
+
+void retain_poisoned_handle(const env_handle *handle) {
+  retain_poisoned_keys(handle->key, handle->path_key);
 }
 
 void register_env(env_handle *handle) { open_envs.push_back(handle); }
@@ -134,15 +164,16 @@ void unregister_env(env_handle *handle) {
                   open_envs.end());
 }
 
-// The open handle keyed by `key`, or null. See env_key_for() for what makes
+// The open handle matching `wanted`, or null. See env_keys_for() for what makes
 // two spellings of one environment arrive here as the same key.
 //
 // Entries inherited across a fork() are skipped: the vector is copied into the
 // child along with everything else, but the environments it names belong to
 // the parent, and the child is entitled to open them itself.
-env_handle *find_open_env(const std::string &key) {
+env_handle *find_open_env(const env_keys &wanted) {
   for (env_handle *handle : open_envs) {
-    if (handle->key == key && handle->pid == current_pid())
+    if (handle->pid == current_pid() &&
+        keys_match(handle->key, handle->path_key, wanted))
       return handle;
   }
   return nullptr;
@@ -232,25 +263,35 @@ bool file_identity(const std::string &path, std::string &out) {
 // canonical spelling only where it cannot, which is a data file that does not
 // exist yet.
 //
-// The fallback is also what a filesystem with no usable identity gets -- FAT
-// and exFAT keep no file index -- and there the keying is exactly what it was
-// before identity: equal for equal spellings, blind to links. Nothing is lost,
-// since those filesystems have no links to be blind to.
+// So both are kept, and a match on either is a match. Identity alone is not
+// enough, because it is not stable against the file going away: unlink an open
+// environment's data file and stat() can no longer answer for that path, so an
+// open aimed at it would miss an incumbent keyed by identity and reach libmdbx
+// -- which still holds the lock file named after the path, and blocks on it
+// forever in this same single-threaded process. The lock file is named after
+// the path, so the path has to be a key.
 //
-// Either way the fallback cannot hide a collision, because two keys only ever
-// compare equal within their own kind: the prefixes keep them apart, and a
-// given data file yields the same kind on every call, identity or not. What it
-// can do is miss one, which is the pre-existing behaviour and not a new hazard.
+// Matching on the path as well is right even when the file really has been
+// replaced rather than merely unlinked: the replacement would share the
+// incumbent's lock file, which is a genuine conflict and not a false one.
+//
+// A filesystem that keeps no file index -- FAT and exFAT do not, and nor do
+// some network redirectors -- supplies no identity at all, and there the path
+// key is the only one. That is exactly the keying this had before identity:
+// equal for equal spellings, blind to links, which those filesystems do not
+// have anyway.
 //
 // Identity is not knowable before the file exists, so an environment created by
 // its own open is keyed from the spelling for the registry check and re-keyed
 // from the file once the open has made one. The key is compared, never shown --
 // the refusal prints the paths the caller and the incumbent wrote.
-std::string env_key_for(const std::string &spelling) {
-  std::string key;
-  if (file_identity(spelling, key))
-    return key;
-  return "path:" + spelling;
+env_keys env_keys_for(const std::string &spelling) {
+  env_keys keys;
+  std::string identity;
+  if (file_identity(spelling, identity))
+    keys.identity = identity;
+  keys.path = "path:" + spelling;
+  return keys;
 }
 
 namespace {
@@ -399,12 +440,22 @@ struct open_context {
 // A regression test needs to reach them, so the flags exist; each is consumed
 // by the call it fires, and nothing outside the suite ever sets one.
 bool panic_next_open = false;
-bool panic_next_close = false;
+
+// Aimed at one environment rather than armed for "the next close".
+//
+// A global flag is eaten by whichever close_call runs first, and close_call is
+// reached from the environment finalizer as well as from mdbx_env_close() -- so
+// any GC between arming and closing hands the panic to an unrelated environment
+// the suite had abandoned, poisons it, claims its path, and leaves the intended
+// close to return normally. The suite abandons environments constantly by
+// design, and R may collect at any allocation.
+env_handle *panic_close_target = nullptr;
 
 } // namespace
 
 void arm_open_panic() { panic_next_open = true; }
-void arm_close_panic() { panic_next_close = true; }
+
+void arm_close_panic(env_handle *handle) { panic_close_target = handle; }
 
 namespace {
 
@@ -464,8 +515,8 @@ struct close_context {
 void close_call(void *data) {
   close_context *context = static_cast<close_context *>(data);
 
-  if (panic_next_close) {
-    panic_next_close = false;
+  if (panic_close_target != nullptr && context->handle == panic_close_target) {
+    panic_close_target = nullptr;
     mdbx_r_panic("close-guard test", "close_call", 1);
   }
 
@@ -852,7 +903,7 @@ void close_handle(env_handle *handle, bool propagate) {
   // stays taken for the life of the process. unregister_env() above has already
   // given it up, so record the key separately -- see poisoned_keys.
   if (handle->poisoned) {
-    retain_poisoned_key(handle->key);
+    retain_poisoned_handle(handle);
     handle->env = nullptr;
     return;
   }
@@ -871,7 +922,7 @@ void close_handle(env_handle *handle, bool propagate) {
   // because the finalizer reaches here too and a GC-time panic loses the path
   // just as thoroughly as an explicit close does.
   if (result != MDBX_R_GUARD_OK)
-    retain_poisoned_key(handle->key);
+    retain_poisoned_handle(handle);
 
   handle->env = nullptr;
 
@@ -1167,19 +1218,19 @@ cpp11::sexp mdbx_env_open_(std::string path, std::string spelling, bool readonly
   // The incumbent's own spelling goes in the message when it differs from the
   // one being refused: the caller matched it on the canonical key, so without
   // it they are told that a path they did not write is already open.
-  const std::string key = mdbx_r::env_key_for(spelling);
+  const mdbx_r::env_keys keys = mdbx_r::env_keys_for(spelling);
 
   // Poisoned and already detached: libmdbx still holds the file and nothing
   // will ever make it let go, so say that rather than let the open reach the
   // lock file. No handle survives to be offered as the alternative.
-  if (mdbx_r::key_is_poisoned(key))
+  if (mdbx_r::key_is_poisoned(keys))
     cpp11::stop("mdbx environment '%s' cannot be opened: a libmdbx assertion "
                 "failure left an earlier handle for it unusable, and libmdbx "
                 "still holds the file for as long as this process lives. Start "
                 "a new R session to reach it again",
                 path.c_str());
 
-  if (mdbx_r::env_handle *incumbent = mdbx_r::find_open_env(key)) {
+  if (mdbx_r::env_handle *incumbent = mdbx_r::find_open_env(keys)) {
     // Poisoned but still held. "Use the existing handle" would be impossible
     // advice -- every operation on it refuses -- and closing it does not free
     // the path either, so neither half of the ordinary refusal applies.
@@ -1210,6 +1261,14 @@ cpp11::sexp mdbx_env_open_(std::string path, std::string spelling, bool readonly
   std::unique_ptr<mdbx_r::env_handle> handle(
       new mdbx_r::env_handle{nullptr, false, mdbx_r::current_pid()});
 
+  // Keyed before the open rather than after it, so that every way out of this
+  // function can claim the path. The cleanup close below runs on a handle whose
+  // keys would otherwise still be empty, and if that close panics it has
+  // nothing to record. Re-keyed on success, where the identity finally exists.
+  handle->key = keys.identity;
+  handle->path_key = keys.path;
+  handle->path = path;
+
   mdbx_r::open_context context = {handle.get(),
                                   path.c_str(),
                                   static_cast<MDBX_env_flags_t>(flags),
@@ -1229,13 +1288,13 @@ cpp11::sexp mdbx_env_open_(std::string path, std::string spelling, bool readonly
   // lock file before it panicked, it holds it for the life of the process with
   // nothing left pointing at it.
   //
-  // Claim the path on the way out, under both spellings the key can take: the
-  // one computed before the open, and the one the data file this attempt may
-  // just have created now yields. handle->key is still empty here, so neither
-  // comes from the handle.
+  // Claim the path on the way out, under the keys computed before the attempt
+  // and under the identity the data file it may just have created now yields --
+  // creating the file changes which identity a later open computes.
   if (result != MDBX_R_GUARD_OK) {
-    mdbx_r::retain_poisoned_key(key);
-    mdbx_r::retain_poisoned_key(mdbx_r::env_key_for(spelling));
+    mdbx_r::retain_poisoned_keys(keys.identity, keys.path);
+    mdbx_r::retain_poisoned_keys(mdbx_r::env_keys_for(spelling).identity,
+                                 std::string());
     mdbx_r::stop_after_panic(panic);
   }
 
@@ -1252,11 +1311,10 @@ cpp11::sexp mdbx_env_open_(std::string path, std::string spelling, bool readonly
   // directory, and print.mdbx_env() said "single file" for it.
   const bool actual_subdir = (context.actual_flags & MDBX_NOSUBDIR) == 0;
 
-  // Re-keyed now rather than reusing the key the check above was made with: an
-  // environment this call created had no identity to be keyed by until the open
-  // put its data file on disk.
-  handle->key = mdbx_r::env_key_for(spelling);
-  handle->path = path;
+  // Re-keyed now rather than keeping the one the check above was made with: an
+  // environment this call created had no identity until the open put its data
+  // file on disk. The path key does not change.
+  handle->key = mdbx_r::env_keys_for(spelling).identity;
 
   // Registered only once the external pointer exists, so that a failure to
   // build it cannot leave the registry holding an address nothing will free.
@@ -2173,12 +2231,71 @@ double mdbx_dbi_sequence_(cpp11::sexp txn, cpp11::strings db, double increment) 
   return static_cast<double>(context.result);
 }
 
+namespace {
+
+struct count_context {
+  mdbx_r::txn_handle *handle;
+  int count;
+  int rc;
+};
+
+int count_visit(void *ctx, const MDBX_txn *, const MDBX_val *,
+                MDBX_db_flags_t, const struct MDBX_stat *,
+                MDBX_dbi) MDBX_CXX17_NOEXCEPT {
+  ++static_cast<count_context *>(ctx)->count;
+  return 0;
+}
+
+void count_call(void *data) {
+  count_context *context = static_cast<count_context *>(data);
+  context->rc = mdbx_enumerate_tables(context->handle->txn, count_visit, context);
+}
+
+void poison_count(void *data) {
+  mdbx_r::poison_txn(static_cast<count_context *>(data)->handle);
+}
+
+// How many named databases this transaction can see.
+int count_named_tables(mdbx_r::txn_handle *handle) {
+  count_context context = {handle, 0, MDBX_SUCCESS};
+  mdbx_r::guard(count_call, &context, poison_count);
+  mdbx_r::check(context.rc);
+  return context.count;
+}
+
+} // namespace
+
 // Empty a database, or delete it outright.
 [[cpp11::register]]
 void mdbx_dbi_drop_(cpp11::sexp txn, cpp11::strings db, bool del) {
   // Emptying and deleting are both writes, and libmdbx reports a read
   // transaction's refusal as a bare EACCES. mdbx_put() has always named it.
   mdbx_r::txn_handle *handle = writable_txn(txn);
+
+  // Emptying the main database destroys every named database with it: a named
+  // database *is* a record in the main tree, and mdbx_drop() purges the whole
+  // tree. It cannot be made consistent afterwards either -- this transaction's
+  // cached handles go on answering from purged trees, and libmdbx keeps its own
+  // environment-level record of the name, so after the commit mdbx_dbi_open()
+  // still succeeds for a database whose reads then fail with MDBX_BAD_DBI.
+  // Repairing that would need mdbx_dbi_close(), which this package does not
+  // call. So refuse while there is anything to lose.
+  //
+  // Checked here rather than in R, and after writable_txn() rather than before
+  // it. In R the only available answer to "is this a write transaction" was the
+  // `write` attribute on the external pointer, which R code can rewrite in
+  // place -- so the guard could be switched off with `attr(txn, "write") <-
+  // FALSE` and the purge went through. handle->write is the transaction's own.
+  if (!del && db.size() == 0) {
+    const int named = count_named_tables(handle);
+    if (named > 0)
+      cpp11::stop("emptying the main database would also destroy the %d named "
+                  "database(s) in this environment, because each one is a "
+                  "record in the main database. Drop them by name first if "
+                  "that is what you want, or delete the main database's keys "
+                  "individually",
+                  named);
+  }
 
   // The main database cannot be deleted -- it is where the named ones are
   // recorded, so an environment without it is not an environment. libmdbx does
@@ -2382,7 +2499,9 @@ void mdbx_test_panic_stat_(cpp11::sexp env, bool info) {
 void mdbx_test_arm_open_panic_() { mdbx_r::arm_open_panic(); }
 
 [[cpp11::register]]
-void mdbx_test_arm_close_panic_() { mdbx_r::arm_close_panic(); }
+void mdbx_test_arm_close_panic_(cpp11::sexp env) {
+  mdbx_r::arm_close_panic(mdbx_r::env_from_sexp(env));
+}
 
 // Internal regression hook, as above but for a transaction operation: drive a
 // panic through the guard mdbx_get() installs, using the real get_context and

@@ -160,8 +160,8 @@ mdbx_test_arm_open_panic_ <- function() {
   invisible(.Call(`_mdbx_mdbx_test_arm_open_panic_`))
 }
 
-mdbx_test_arm_close_panic_ <- function() {
-  invisible(.Call(`_mdbx_mdbx_test_arm_close_panic_`))
+mdbx_test_arm_close_panic_ <- function(env) {
+  invisible(.Call(`_mdbx_mdbx_test_arm_close_panic_`, env))
 }
 
 mdbx_test_panic_get_ <- function(txn) {

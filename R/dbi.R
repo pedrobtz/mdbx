@@ -130,42 +130,12 @@ mdbx_dbi_open <- function(txn, name, create = FALSE) {
 #' unlink(c(path, paste0(path, "-lck")))
 mdbx_dbi_drop <- function(txn, db, delete = FALSE) {
   delete <- check_bool(delete, "delete")
-  name <- db_name(db, txn)
-
-  # Emptying the main database destroys every named database with it, because
-  # what a named database *is* is a record in the main one -- libmdbx purges the
-  # whole main tree and those records go with it. Nothing about "removes every
-  # record but keeps the database" prepares anyone for that.
-  #
-  # Worse, it cannot be made consistent afterwards. The transaction's cached
-  # handles go on answering from trees libmdbx has already purged, so within the
-  # same transaction mdbx_dbi_list() reports nothing while a handle opened a
-  # moment earlier still returns rows; and libmdbx keeps its own environment-
-  # level record of the name, so after the commit mdbx_dbi_open() still succeeds
-  # for a database that no longer exists and the read through it fails with a
-  # raw MDBX_BAD_DBI. Putting that right would need mdbx_dbi_close(), the one
-  # call this package refuses to make (see .agents/design.md).
-  #
-  # So refuse while there is anything to lose. Emptying main is exactly as safe
-  # as it sounds once no named database is riding on it, and that case stays
-  # allowed.
-  # Only for a write transaction. A read one is refused by the native layer for
-  # being read-only, which is the problem it actually has -- and checking here
-  # first named the other one, so the two halves of this function disagreed
-  # about what was wrong with the same call.
-  if (length(name) == 0L && !delete && isTRUE(attr(txn, "write"))) {
-    named <- mdbx_dbi_list_(txn)
-    if (length(named) > 0L) {
-      stop(sprintf(paste0(
-        "emptying the main database would also destroy the %d named database%s ",
-        "in this environment, because each one is a record in the main ",
-        "database. Drop them by name first if that is what you want, or delete ",
-        "the main database's keys individually"
-      ), length(named), if (length(named) == 1L) "" else "s"), call. = FALSE)
-    }
-  }
-
-  mdbx_dbi_drop_(txn, name, delete)
+  # The named-database guard and the read-only refusal both live in the native
+  # layer now: see mdbx_dbi_drop_(). The `write` attribute this used to consult
+  # is one R code can rewrite in place, which made the guard switchable off from
+  # the outside -- on a call whose whole purpose is to prevent an irreversible
+  # purge.
+  mdbx_dbi_drop_(txn, db_name(db, txn), delete)
   invisible(NULL)
 }
 

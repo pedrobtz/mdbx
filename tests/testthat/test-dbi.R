@@ -421,6 +421,35 @@ test_that("the main database can be emptied but not deleted", {
   mdbx_env_close(env)
 })
 
+test_that("the main-emptying guard cannot be switched off from R", {
+  # It used to read `attr(txn, "write")`, which R can rewrite in place on the
+  # external pointer -- so two lines of ordinary R code disabled the guard and
+  # the irreversible purge went through. The transaction's own write flag lives
+  # in the native handle, and that is what decides.
+  env <- multi_env()
+  mdbx_with_write(env, function(txn) {
+    mdbx_put(txn, "a", "1", db = mdbx_dbi_open(txn, "d1", create = TRUE))
+  })
+
+  mdbx_with_write(env, function(txn) {
+    expect_error(mdbx_dbi_drop(txn, NULL), "would also destroy")
+
+    attr(txn, "write") <- FALSE
+    expect_error(mdbx_dbi_drop(txn, NULL), "would also destroy")
+
+    attr(txn, "write") <- NULL
+    expect_error(mdbx_dbi_drop(txn, NULL), "would also destroy")
+  })
+
+  # Nothing was purged by any of it.
+  mdbx_with_read(env, function(txn) {
+    expect_identical(mdbx_dbi_list(txn), "d1")
+    expect_identical(mdbx_get(txn, "a", db = mdbx_dbi_open(txn, "d1")), "1")
+  })
+
+  mdbx_env_close(env)
+})
+
 test_that("emptying main does not leave a handle reading a purged database", {
   # The inconsistency the refusal exists to make unreachable: the transaction's
   # cached handle used to go on answering from a tree libmdbx had already
