@@ -69,7 +69,7 @@ mdbx_env_stat.mdbx_env <- function(x, ...) {
   # `db` in particular: a named database is resolved inside a transaction, so
   # asking an environment about one cannot be answered rather than answered
   # environment-wide.
-  check_dots_empty(..., call_name = "mdbx_env_stat() on an environment")
+  check_dots_empty(list(...), "mdbx_env_stat() on an environment")
   mdbx_env_stat_(x)
 }
 
@@ -79,7 +79,7 @@ mdbx_env_stat.mdbx_env <- function(x, ...) {
 #' @rdname mdbx_env_stat
 #' @export
 mdbx_env_stat.mdbx_txn <- function(x, db = NULL, ...) {
-  check_dots_empty(..., call_name = "mdbx_env_stat() on a transaction")
+  check_dots_empty(list(...), "mdbx_env_stat() on a transaction")
   mdbx_txn_stat_(x, db_name(db, x))
 }
 
@@ -129,7 +129,7 @@ mdbx_env_info <- function(x, ...) {
 
 #' @export
 mdbx_env_info.mdbx_env <- function(x, ...) {
-  check_dots_empty(..., call_name = "mdbx_env_info() on an environment")
+  check_dots_empty(list(...), "mdbx_env_info() on an environment")
   mdbx_env_info_(x)
 }
 
@@ -137,7 +137,7 @@ mdbx_env_info.mdbx_env <- function(x, ...) {
 mdbx_env_info.mdbx_txn <- function(x, ...) {
   # There is no per-database info: MDBX_envinfo describes the environment, and
   # a transaction only changes which snapshot it is read from.
-  check_dots_empty(..., call_name = "mdbx_env_info() on a transaction")
+  check_dots_empty(list(...), "mdbx_env_info() on a transaction")
   mdbx_txn_info_(x)
 }
 
@@ -202,8 +202,16 @@ mdbx_limits <- function(x = NULL) {
 # it. Discarding what lands there silently is how mdbx_env_stat(env, db = x)
 # came to answer with environment-wide statistics: a plausible number for a
 # question about a named database, which only a transaction can answer.
-check_dots_empty <- function(..., call_name) {
-  dots <- list(...)
+# Takes the dots already collected, rather than through its own `...`.
+#
+# Arguments forwarded through `...` are matched against the callee's formals,
+# so a `call_name` of this function's own was reachable from the public API:
+# mdbx_env_stat(env, call_name = "x") bound the user's value to the formal
+# alongside the label the method passed, and R raised "formal argument
+# 'call_name' matched by multiple actual arguments" instead of the refusal this
+# is here to give. Partial matching would have let shorter spellings do it too.
+# Collecting the dots in the caller leaves nothing here for them to match.
+check_dots_empty <- function(dots, call_name) {
   if (length(dots) == 0L) {
     return(invisible(NULL))
   }

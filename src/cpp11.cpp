@@ -50,10 +50,10 @@ extern "C" SEXP _mdbx_mdbx_version_() {
   END_CPP11
 }
 // r_mdbx.cpp
-cpp11::sexp mdbx_env_open_(std::string path, std::string key, bool readonly, bool subdir, double max_dbs, double map_size, double max_readers, int mode, cpp11::strings extra_flags);
-extern "C" SEXP _mdbx_mdbx_env_open_(SEXP path, SEXP key, SEXP readonly, SEXP subdir, SEXP max_dbs, SEXP map_size, SEXP max_readers, SEXP mode, SEXP extra_flags) {
+cpp11::sexp mdbx_env_open_(std::string path, std::string spelling, bool readonly, bool subdir, double max_dbs, double map_size, double max_readers, int mode, cpp11::strings extra_flags);
+extern "C" SEXP _mdbx_mdbx_env_open_(SEXP path, SEXP spelling, SEXP readonly, SEXP subdir, SEXP max_dbs, SEXP map_size, SEXP max_readers, SEXP mode, SEXP extra_flags) {
   BEGIN_CPP11
-    return cpp11::as_sexp(mdbx_env_open_(cpp11::as_cpp<cpp11::decay_t<std::string>>(path), cpp11::as_cpp<cpp11::decay_t<std::string>>(key), cpp11::as_cpp<cpp11::decay_t<bool>>(readonly), cpp11::as_cpp<cpp11::decay_t<bool>>(subdir), cpp11::as_cpp<cpp11::decay_t<double>>(max_dbs), cpp11::as_cpp<cpp11::decay_t<double>>(map_size), cpp11::as_cpp<cpp11::decay_t<double>>(max_readers), cpp11::as_cpp<cpp11::decay_t<int>>(mode), cpp11::as_cpp<cpp11::decay_t<cpp11::strings>>(extra_flags)));
+    return cpp11::as_sexp(mdbx_env_open_(cpp11::as_cpp<cpp11::decay_t<std::string>>(path), cpp11::as_cpp<cpp11::decay_t<std::string>>(spelling), cpp11::as_cpp<cpp11::decay_t<bool>>(readonly), cpp11::as_cpp<cpp11::decay_t<bool>>(subdir), cpp11::as_cpp<cpp11::decay_t<double>>(max_dbs), cpp11::as_cpp<cpp11::decay_t<double>>(map_size), cpp11::as_cpp<cpp11::decay_t<double>>(max_readers), cpp11::as_cpp<cpp11::decay_t<int>>(mode), cpp11::as_cpp<cpp11::decay_t<cpp11::strings>>(extra_flags)));
   END_CPP11
 }
 // r_mdbx.cpp
@@ -288,6 +288,22 @@ extern "C" SEXP _mdbx_mdbx_test_panic_stat_(SEXP env, SEXP info) {
   END_CPP11
 }
 // r_mdbx.cpp
+void mdbx_test_arm_open_panic_();
+extern "C" SEXP _mdbx_mdbx_test_arm_open_panic_() {
+  BEGIN_CPP11
+    mdbx_test_arm_open_panic_();
+    return R_NilValue;
+  END_CPP11
+}
+// r_mdbx.cpp
+void mdbx_test_arm_close_panic_(cpp11::sexp env);
+extern "C" SEXP _mdbx_mdbx_test_arm_close_panic_(SEXP env) {
+  BEGIN_CPP11
+    mdbx_test_arm_close_panic_(cpp11::as_cpp<cpp11::decay_t<cpp11::sexp>>(env));
+    return R_NilValue;
+  END_CPP11
+}
+// r_mdbx.cpp
 void mdbx_test_panic_get_(cpp11::sexp txn);
 extern "C" SEXP _mdbx_mdbx_test_panic_get_(SEXP txn) {
   BEGIN_CPP11
@@ -330,6 +346,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_mdbx_mdbx_limits_",               (DL_FUNC) &_mdbx_mdbx_limits_,               1},
     {"_mdbx_mdbx_put_",                  (DL_FUNC) &_mdbx_mdbx_put_,                  5},
     {"_mdbx_mdbx_scan_",                 (DL_FUNC) &_mdbx_mdbx_scan_,                 6},
+    {"_mdbx_mdbx_test_arm_close_panic_", (DL_FUNC) &_mdbx_mdbx_test_arm_close_panic_, 1},
+    {"_mdbx_mdbx_test_arm_open_panic_",  (DL_FUNC) &_mdbx_mdbx_test_arm_open_panic_,  0},
     {"_mdbx_mdbx_test_check_",           (DL_FUNC) &_mdbx_mdbx_test_check_,           1},
     {"_mdbx_mdbx_test_error_codes_",     (DL_FUNC) &_mdbx_mdbx_test_error_codes_,     0},
     {"_mdbx_mdbx_test_panic_boundary_",  (DL_FUNC) &_mdbx_mdbx_test_panic_boundary_,  0},

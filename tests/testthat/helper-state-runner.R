@@ -255,7 +255,7 @@ generate_command <- function(fixture, model, profile) {
     sequence = list(op = "sequence", db = db,
                     increment = pick(list(0, 1, 5))),
     bad_dbi = list(op = "bad_dbi", db = db,
-                   field = pick(c("name", "path")),
+                   field = pick(c("name", "path", "token")),
                    value = pick(list(character(0), "", NA_character_,
                                      c("a", "b"), NULL, 42))),
     bad_arg = list(op = "bad_arg", which = pick(c("dots", "flag", "limit", "class"))),
@@ -285,6 +285,17 @@ run_command <- function(fixture, model, command) {
                     max_dbs = fixture$max_dbs, map_size = fixture$map_size)
     )
 
+    # Stored before the outcome is judged, not after. An open that succeeds
+    # where the model expected a refusal is a failure -- but the handle it
+    # returned is real, and clean_state_fixture() can only close what it can
+    # reach through fixture$envs. Returning first left a second libmdbx
+    # environment open on the same file for the rest of the session, so every
+    # later test touching that path inherited the damage instead of seeing the
+    # one clean failure here.
+    if (isTRUE(outcome$ok)) {
+      assign(command$label, outcome$value, envir = fixture$envs)
+    }
+
     if (already) {
       # Every spelling of an environment this process already has open must be
       # refused, and refused by name rather than with the lock file's errno.
@@ -293,7 +304,6 @@ run_command <- function(fixture, model, command) {
     }
 
     if (isTRUE(outcome$ok)) {
-      assign(command$label, outcome$value, envir = fixture$envs)
       model <- model_open_env(model, command$label, command$id)
     }
     return(list(model = model, fixture = fixture, outcome = outcome, expect = "ok"))
@@ -442,9 +452,11 @@ run_command <- function(fixture, model, command) {
     # Built here rather than obtained from mdbx_dbi_open(), so that damaging a
     # record cannot also create a database the model does not know about -- and
     # so the refusal is provoked by the damage and not by a missing database.
-    # The path is the transaction's own, so the cross-environment check passes
-    # and the field validation is what has to catch this.
-    handle <- structure(list(name = "d1", path = attr(fixture_txn(fixture), "path")),
+    # The path and token are the transaction's own, so the cross-environment
+    # check passes and the field validation is what has to catch this.
+    handle <- structure(list(name = "d1",
+                             path = attr(fixture_txn(fixture), "path"),
+                             token = attr(fixture_txn(fixture), "token")),
                         class = "mdbx_dbi")
     handle[[command$field]] <- command$value
     outcome <- capture_outcome(
@@ -569,12 +581,20 @@ check_data_invariant <- function(fixture, model, fail) {
 check_lifecycle_invariant <- function(fixture, model, fail) {
   open_labels <- ls(fixture$envs)
 
-  # The sequence's own contribution to the registry, not the whole process:
-  # the rest of the suite leaves environments for the collector, and they are
-  # counted here too until it runs.
+  # An upper bound, not an equality. The baseline is a snapshot of a
+  # process-wide count, and the rest of the suite leaves environments for the
+  # collector: one of those being finalized part-way through a sequence lowers
+  # the count under a baseline taken before it ran, and an equality test then
+  # fails pointing at this sequence rather than at the unrelated finalizer that
+  # actually moved. The sequence's own handles are all strongly referenced in
+  # fixture$envs and cannot be collected, so nothing of ours goes missing.
+  #
+  # A leak -- an environment this sequence opened and lost track of -- can only
+  # push the count up, so the bound that matters is still checked. Each handle's
+  # own state is verified below.
   held <- mdbx:::mdbx_env_open_count_() - fixture$env_baseline
-  if (!identical(held, length(open_labels))) {
-    fail("the open registry tracks the environments this sequence holds",
+  if (held > length(open_labels)) {
+    fail("the open registry holds no environment this sequence lost track of",
          sprintf("registry grew by %d, the sequence holds %d",
                  held, length(open_labels)))
   }

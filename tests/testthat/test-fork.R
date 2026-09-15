@@ -65,6 +65,103 @@ test_that("an inherited transaction is refused too", {
   mdbx_env_close(env)
 })
 
+test_that("a child is told about the fork, not to end transactions it cannot", {
+  # The live-transaction guard used to run first, so the child was told to
+  # "commit or abort them first" -- advice every transaction entry point refuses
+  # it by pid, from the one entry point that did not mention the fork.
+  skip_if_cannot_fork()
+
+  env <- local_seeded_env()
+  txn <- mdbx_txn_begin(env, write = TRUE)
+
+  message <- in_fork(function() mdbx_env_close(env))
+  expect_match(message, "inherited across a fork()", fixed = TRUE)
+  expect_false(grepl("commit or abort them first", message, fixed = TRUE))
+
+  # The other entry points already said so, and still do.
+  expect_match(in_fork(function() mdbx_txn_abort(txn)), "inherited across a fork()",
+               fixed = TRUE)
+
+  # The parent is untouched by any of it.
+  expect_identical(mdbx_txn_state(txn), "active")
+  mdbx_txn_abort(txn)
+  mdbx_env_close(env)
+})
+
+test_that("a refused close in a child leaves its transactions still refusing", {
+  # mdbx_env_close() detached the transactions of a poisoned environment before
+  # it checked the pid, and detach_txns() rewrites them in this process's copy.
+  # The child's own later abort then found a handle already marked finished and
+  # returned silently, instead of naming the fork every other entry point names.
+  skip_if_cannot_fork()
+
+  env <- local_seeded_env()
+  txn <- mdbx_txn_begin(env, write = TRUE)
+  expect_error(mdbx:::mdbx_test_panic_stat_(env, FALSE), "libmdbx assertion failed")
+
+  both <- in_fork(function() {
+    close_message <- tryCatch(mdbx_env_close(env), error = conditionMessage)
+    abort_message <- tryCatch({
+      mdbx_txn_abort(txn)
+      "returned silently"
+    }, error = conditionMessage)
+    c(close_message, abort_message)
+  })
+
+  expect_match(both[[1]], "inherited across a fork()", fixed = TRUE)
+  expect_match(both[[2]], "inherited across a fork()", fixed = TRUE)
+
+  mdbx_env_close(env)
+})
+
+test_that("a poisoned path in the parent does not follow a fork", {
+  # poisoned_keys had no pid, while find_open_env() has always filtered by one.
+  # A child holds none of the parent's libmdbx state and none of its locks, so a
+  # path the parent lost is one the child may open -- exactly as it may open an
+  # environment the parent still holds.
+  skip_if_cannot_fork()
+
+  path <- env_path()
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  expect_error(mdbx:::mdbx_test_panic_stat_(env, FALSE), "libmdbx assertion failed")
+  mdbx_env_close(env)
+
+  # The parent is still locked out, which is the other half of the contract.
+  expect_error(mdbx_env_open(path, map_size = test_map_size),
+               "libmdbx assertion failure")
+
+  opened <- in_fork(function() {
+    child <- mdbx_env_open(path, map_size = test_map_size)
+    on.exit(mdbx_env_close(child))
+    mdbx_env_is_open(child)
+  })
+  expect_true(isTRUE(opened))
+})
+
+test_that("a token minted in a child does not match one minted in the parent", {
+  # fork() duplicates the counter the token is minted from, so a child's next
+  # open and the parent's next open used to receive the same number. A handle
+  # record shipped back from a worker then matched an unrelated environment in
+  # the parent -- the same path here, opened afresh, which the token's own
+  # contract says is a different environment and must be refused.
+  skip_if_cannot_fork()
+
+  path <- env_path()
+  record <- in_fork(function() {
+    env <- mdbx_env_open(path, max_dbs = 8, map_size = test_map_size)
+    on.exit(mdbx_env_close(env))
+    mdbx_with_write(env, function(txn) mdbx_dbi_open(txn, "shared", create = TRUE))
+  })
+  expect_s3_class(record, "mdbx_dbi")
+
+  env <- mdbx_env_open(path, max_dbs = 8, map_size = test_map_size)
+  on.exit(mdbx_env_close(env), add = TRUE)
+
+  mdbx_with_read(env, function(txn) {
+    expect_error(mdbx_get(txn, "k", db = record), "since been closed")
+  })
+})
+
 test_that("a child cannot close its parent's environment", {
   skip_if_cannot_fork()
 
