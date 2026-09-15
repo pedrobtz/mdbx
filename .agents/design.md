@@ -49,6 +49,60 @@ The transaction stays explicit. It is what buys atomicity across operations, a c
 snapshot, and throughput — measured at 1000 keys, one transaction versus one per operation: 0.026 s
 against 0.893 s for writes (34x), 0.006 s against 0.011 s for reads.
 
+### Ownership and lifetime — **settled in Stage 3; the alternative recorded after the reviews**
+
+**The child external pointer retains its parent through the protected field, the environment keeps a
+registry of its live transactions, and an explicit close is refused while that registry is
+non-empty.** Finalizers detach rather than close.
+
+Why it has to be enforced rather than inferred: `mdbx_env_close_ex()` documents that using a
+transaction after its environment closes is undefined behaviour that "would cause a SIGSEGV", and R
+makes no promise about the order in which it runs two finalizers. When an environment and its
+transaction become garbage in the same cycle, the environment's finalizer may run first. So the
+ordering is this package's problem, and `live_txns` is what makes the bad order unreachable.
+
+#### The alternative: C++ refcounting, as RSQLite does it
+
+RSQLite (`r-dbi/RSQLite` at `e61dfae`) solves the same problem a different way, and it is worth
+recording because it is the strongest alternative and it was not considered at the time.
+
+Its `EXTPTRSXP` holds a **`shared_ptr` to** the connection rather than the connection itself
+(`src/connection.cpp:40`), and every result object holds its own copy of that `shared_ptr`
+(`src/DbResult.h:16`). The last reference to go destroys the connection, so **R's collection order
+cannot matter**: there is no parent-retention field, no child registry, and no detach step anywhere
+in the package.
+
+Adopted here, that would delete `detach_txns()`, the nulled `owner` back-reference, and the reasoning
+about which finalizer ran first. That reasoning is not free — three regressions during the review
+rounds lived in exactly it: a `detach_txns()` that ran before the pid check and left a forked child's
+transactions silently finished, a raw test-hook pointer that outlived the handle it named, and a
+`handle.release()` that preceded `register_env()` so a throw in between leaked an open environment
+into no registry at all.
+
+It is **not** adopted, for one reason that is about the API and one that is about this package's
+stance:
+
+- RSQLite can afford to be permissive because **SQLite hands it a deferred close**.
+  `sqlite3_close_v2()` turns a connection with live statements into a zombie and deallocates it when
+  the last one finalizes, so `connection_release()` merely warns — *"There are N result in use. The
+  connection will be released when they are closed"* — and closes anyway
+  (`src/connection.cpp:54-70`). **libmdbx has no `close_v2`.** Its close is immediate, and what
+  follows is a segfault rather than a warning.
+- Refcounting would therefore have to defer the close itself, which changes what
+  `mdbx_env_close()` *means*: from "refuse, because you still hold a transaction" to "drop my
+  reference; the environment closes whenever the last transaction is collected". That is friendlier
+  and it hides the bug. This package refuses a second open, refuses deleting the main database, and
+  refuses emptying it while named databases exist; refusing here is the same judgement. A caller who
+  has lost track of a transaction is better told so than accommodated.
+
+  It would also put the open registry on a timer. The registry has to know when a path is free, and
+  under refcounting that moment arrives whenever the collector gets round to the last transaction.
+
+What the alternative is still good for is **defence in depth**: refcounting underneath the existing
+rules would make a mistake in the ordering logic harmless instead of fatal, without changing what
+any entry point promises. If the ownership code is ever reworked, that is the shape to rework it
+into — not as a replacement for the refusals, but as the floor beneath them.
+
 ### On-disk layout
 
 `mdbx_env_open()` takes `subdir`, defaulting to `FALSE`, which passes `MDBX_NOSUBDIR`: the path is
