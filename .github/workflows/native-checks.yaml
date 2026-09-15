@@ -111,8 +111,21 @@ jobs:
             devtools::test(shuffle = TRUE, stop_on_failure = TRUE)
           }
 
+  # Pinned to a branch of r-actions (PR pedrobtz/r-actions#7) rather than @v1
+  # until that lands and v1 moves. Two inputs, both CI-only, nothing shipped:
+  #   valgrind-opts -- R's own --use-valgrind invocation does not set
+  #     --leak-check=full, so a "definitely lost" total arrives with no stack
+  #     and cannot be attributed. A round-1 regression on this branch leaks
+  #     ~20 KB in the main test process; this is how we find out what.
+  #   cppflags -- -DENABLE_MEMCHECK is libmdbx's own mechanism for annotating
+  #     the page padding it writes deliberately uninitialised, so those bytes
+  #     stop being reported on every commit. The runner's valgrind package
+  #     ships the header it needs.
   valgrind:
-    uses: pedrobtz/r-actions/.github/workflows/valgrind.yml@v1
+    uses: pedrobtz/r-actions/.github/workflows/valgrind.yml@5cb1b44a2b4e5cf126d12852ad9485a110628d33
+    with:
+      valgrind-opts: "--leak-check=full --track-origins=yes --show-leak-kinds=definite,indirect"
+      cppflags: "-DENABLE_MEMCHECK"
 
   lto:
     uses: pedrobtz/r-actions/.github/workflows/lto.yml@v1
