@@ -120,20 +120,26 @@ std::vector<env_handle *> open_envs;
 // none of its locks, so a path the parent lost is one the child may open.
 struct poisoned_path {
   std::string identity;
+  std::string lock;
   std::string path;
   long pid;
 };
 
 std::vector<poisoned_path> poisoned_keys;
 
-bool keys_match(const std::string &identity, const std::string &path,
-                const env_keys &wanted) {
+bool keys_match(const std::string &identity, const std::string &lock,
+                const std::string &path, const env_keys &wanted) {
   // Identity first, and only when both sides have one: it is the answer that
-  // sees through a hard link. The path catches what identity cannot, which is
-  // an incumbent whose data file has since been unlinked or replaced -- either
-  // way libmdbx still holds the lock file named after that path.
+  // sees through a hard link. The lock file's identity is what survives the
+  // data file being unlinked, and it does so under any spelling a
+  // case-insensitive or normalisation-insensitive filesystem maps to the same
+  // file -- which the path key, carrying the basename as typed, cannot. The
+  // path still catches the last case, a lock file that is itself gone, where
+  // refusing is the conservative answer.
   if (!identity.empty() && !wanted.identity.empty() &&
       identity == wanted.identity)
+    return true;
+  if (!lock.empty() && !wanted.lock.empty() && lock == wanted.lock)
     return true;
   return !path.empty() && path == wanted.path;
 }
@@ -141,20 +147,22 @@ bool keys_match(const std::string &identity, const std::string &path,
 bool key_is_poisoned(const env_keys &wanted) {
   const long pid = current_pid();
   for (const poisoned_path &entry : poisoned_keys) {
-    if (entry.pid == pid && keys_match(entry.identity, entry.path, wanted))
+    if (entry.pid == pid &&
+        keys_match(entry.identity, entry.lock, entry.path, wanted))
       return true;
   }
   return false;
 }
 
-void retain_poisoned_keys(const std::string &identity, const std::string &path) {
-  if (identity.empty() && path.empty())
+void retain_poisoned_keys(const std::string &identity, const std::string &lock,
+                          const std::string &path) {
+  if (identity.empty() && lock.empty() && path.empty())
     return;
-  poisoned_keys.push_back(poisoned_path{identity, path, current_pid()});
+  poisoned_keys.push_back(poisoned_path{identity, lock, path, current_pid()});
 }
 
 void retain_poisoned_handle(const env_handle *handle) {
-  retain_poisoned_keys(handle->key, handle->path_key);
+  retain_poisoned_keys(handle->key, handle->lock_key, handle->path_key);
 }
 
 void register_env(env_handle *handle) { open_envs.push_back(handle); }
@@ -173,7 +181,7 @@ void unregister_env(env_handle *handle) {
 env_handle *find_open_env(const env_keys &wanted) {
   for (env_handle *handle : open_envs) {
     if (handle->pid == current_pid() &&
-        keys_match(handle->key, handle->path_key, wanted))
+        keys_match(handle->key, handle->lock_key, handle->path_key, wanted))
       return handle;
   }
   return nullptr;
@@ -285,11 +293,25 @@ bool file_identity(const std::string &path, std::string &out) {
 // its own open is keyed from the spelling for the registry check and re-keyed
 // from the file once the open has made one. The key is compared, never shown --
 // the refusal prints the paths the caller and the incumbent wrote.
+// The lock file libmdbx pairs with a data file spelled `data`: `mdbx.lck`
+// beside `mdbx.dat` in the directory layout, `-lck` appended otherwise. Both
+// are libmdbx's own constants (MDBX_LOCKNAME, MDBX_LOCK_SUFFIX). R spells the
+// data file with `/` on every platform, so one suffix test serves them all.
+std::string lock_spelling_for(const std::string &data) {
+  static const std::string dat = "/mdbx.dat";
+  if (data.size() >= dat.size() &&
+      data.compare(data.size() - dat.size(), dat.size(), dat) == 0)
+    return data.substr(0, data.size() - dat.size()) + "/mdbx.lck";
+  return data + "-lck";
+}
+
 env_keys env_keys_for(const std::string &spelling) {
   env_keys keys;
   std::string identity;
   if (file_identity(spelling, identity))
     keys.identity = identity;
+  if (file_identity(lock_spelling_for(spelling), identity))
+    keys.lock = "lck:" + identity;
   keys.path = "path:" + spelling;
   return keys;
 }
@@ -1038,8 +1060,14 @@ void finalize_txn(SEXP ptr) {
 std::string next_env_token() {
   static uint64_t counter = 0;
 
-  char buffer[32];
-  std::snprintf(buffer, sizeof buffer, "%llu",
+  // The pid is part of it because fork() duplicates the counter: a child's
+  // next open and the parent's next open otherwise mint the same number, and a
+  // handle record shipped back from a forked worker then matched an unrelated
+  // environment in the parent -- the wrong-database access the token exists to
+  // refuse. Within one process the counter alone is unique; across the fork it
+  // is the pid that is.
+  char buffer[48];
+  std::snprintf(buffer, sizeof buffer, "%ld:%llu", current_pid(),
                 static_cast<unsigned long long>(++counter));
   return buffer;
 }
@@ -1303,6 +1331,7 @@ cpp11::sexp mdbx_env_open_(std::string path, std::string spelling, bool readonly
   // keys would otherwise still be empty, and if that close panics it has
   // nothing to record. Re-keyed on success, where the identity finally exists.
   handle->key = keys.identity;
+  handle->lock_key = keys.lock;
   handle->path_key = keys.path;
   handle->path = path;
 
@@ -1329,9 +1358,9 @@ cpp11::sexp mdbx_env_open_(std::string path, std::string spelling, bool readonly
   // and under the identity the data file it may just have created now yields --
   // creating the file changes which identity a later open computes.
   if (result != MDBX_R_GUARD_OK) {
-    mdbx_r::retain_poisoned_keys(keys.identity, keys.path);
-    mdbx_r::retain_poisoned_keys(mdbx_r::env_keys_for(spelling).identity,
-                                 std::string());
+    const mdbx_r::env_keys after = mdbx_r::env_keys_for(spelling);
+    mdbx_r::retain_poisoned_keys(keys.identity, keys.lock, keys.path);
+    mdbx_r::retain_poisoned_keys(after.identity, after.lock, std::string());
     mdbx_r::stop_after_panic(panic);
   }
 
@@ -1348,10 +1377,14 @@ cpp11::sexp mdbx_env_open_(std::string path, std::string spelling, bool readonly
   // directory, and print.mdbx_env() said "single file" for it.
   const bool actual_subdir = (context.actual_flags & MDBX_NOSUBDIR) == 0;
 
-  // Re-keyed now rather than keeping the one the check above was made with: an
-  // environment this call created had no identity until the open put its data
-  // file on disk. The path key does not change.
-  handle->key = mdbx_r::env_keys_for(spelling).identity;
+  // Re-keyed now rather than keeping the ones the check above was made with: an
+  // environment this call created had neither a data file nor a lock file until
+  // the open put them on disk. The path key does not change.
+  {
+    const mdbx_r::env_keys after = mdbx_r::env_keys_for(spelling);
+    handle->key = after.identity;
+    handle->lock_key = after.lock;
+  }
 
   // Registered before the external pointer exists, and unregistered again if
   // building it throws.

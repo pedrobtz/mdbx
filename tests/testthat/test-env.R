@@ -284,6 +284,37 @@ test_that("an environment whose data file was unlinked is still found", {
   unlink(c(path, paste0(path, "-lck")))
 })
 
+test_that("a respelled path on a case-insensitive filesystem is found after unlink", {
+  # The path key carries the basename as typed, and on APFS or NTFS `Foo.mdbx`
+  # and `foo.mdbx` are one file, one lock file, and two different path keys.
+  # While the data file exists its identity bridges them. Once it is unlinked
+  # nothing did: the open reached libmdbx and blocked on the shared lock. The
+  # lock file is still there for as long as the environment is open, so its
+  # identity is the key that answers here -- under either spelling.
+  dir <- tempfile("case-")
+  dir.create(dir)
+  writeLines("probe", file.path(dir, "Probe.txt"))
+  skip_if_not(file.exists(file.path(dir, "probe.txt")), "filesystem is case-sensitive")
+
+  upper <- file.path(dir, "Foo.mdbx")
+  lower <- file.path(dir, "foo.mdbx")
+
+  env <- mdbx_env_open(upper, map_size = test_map_size)
+  on.exit(mdbx_env_close(env), add = TRUE)
+
+  # Identity already covers this half.
+  expect_error(mdbx_env_open(lower, map_size = test_map_size),
+               "already open in this process")
+
+  unlink(upper)
+  skip_if(file.exists(upper), "could not unlink an open data file on this platform")
+
+  # Only the lock file is left to say so, and it has to say so for the other
+  # spelling. Without it this call does not fail -- it hangs.
+  expect_error(mdbx_env_open(lower, map_size = test_map_size),
+               "already open in this process")
+})
+
 test_that("an alias is openable once the environment it aliases is closed", {
   # Keying by identity must not leave a spelling permanently spoken for.
   skip_on_os("windows")

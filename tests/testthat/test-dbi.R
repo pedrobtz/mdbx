@@ -271,6 +271,37 @@ test_that("a handle cannot be used against a different environment", {
   mdbx_env_close(two)
 })
 
+test_that("a handle needs both its token and its path to match", {
+  # Either field alone can be rewritten from R, and the token alone can collide
+  # across a fork(). Requiring both means a record has to agree with the
+  # transaction about which open at which place; forging one of the two is not
+  # enough.
+  one <- multi_env()
+  two <- multi_env()
+
+  handle <- mdbx_with_write(one, function(txn) mdbx_dbi_open(txn, "shared", create = TRUE))
+  mdbx_with_write(two, function(txn) {
+    mdbx_put(txn, "k", "two", db = mdbx_dbi_open(txn, "shared", create = TRUE))
+  })
+
+  mdbx_with_read(two, function(txn) {
+    forged_token <- handle
+    forged_token$token <- attr(two, "token")
+    expect_error(mdbx_get(txn, "k", db = forged_token), "belongs to the environment")
+
+    forged_path <- handle
+    forged_path$path <- attr(two, "path")
+    expect_error(mdbx_get(txn, "k", db = forged_path), "since been closed")
+
+    # The honest handle for this environment still works, so the check has not
+    # broken the path it guards.
+    expect_identical(mdbx_get(txn, "k", db = mdbx_dbi_open(txn, "shared")), "two")
+  })
+
+  mdbx_env_close(one)
+  mdbx_env_close(two)
+})
+
 test_that("a handle cannot be used against a replacement at the same path", {
   # The path is the same, so only the token tells the two environments apart.
   # Without it the old handle went on addressing the same-named database in an

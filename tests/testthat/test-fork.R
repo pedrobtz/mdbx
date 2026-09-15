@@ -138,6 +138,30 @@ test_that("a poisoned path in the parent does not follow a fork", {
   expect_true(isTRUE(opened))
 })
 
+test_that("a token minted in a child does not match one minted in the parent", {
+  # fork() duplicates the counter the token is minted from, so a child's next
+  # open and the parent's next open used to receive the same number. A handle
+  # record shipped back from a worker then matched an unrelated environment in
+  # the parent -- the same path here, opened afresh, which the token's own
+  # contract says is a different environment and must be refused.
+  skip_if_cannot_fork()
+
+  path <- env_path()
+  record <- in_fork(function() {
+    env <- mdbx_env_open(path, max_dbs = 8, map_size = test_map_size)
+    on.exit(mdbx_env_close(env))
+    mdbx_with_write(env, function(txn) mdbx_dbi_open(txn, "shared", create = TRUE))
+  })
+  expect_s3_class(record, "mdbx_dbi")
+
+  env <- mdbx_env_open(path, max_dbs = 8, map_size = test_map_size)
+  on.exit(mdbx_env_close(env), add = TRUE)
+
+  mdbx_with_read(env, function(txn) {
+    expect_error(mdbx_get(txn, "k", db = record), "since been closed")
+  })
+})
+
 test_that("a child cannot close its parent's environment", {
   skip_if_cannot_fork()
 

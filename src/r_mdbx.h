@@ -29,6 +29,7 @@ long current_pid();
 // canonical path. Defined in r_mdbx.cpp, where the reasoning is.
 struct env_keys {
   std::string identity;
+  std::string lock;
   std::string path;
 };
 
@@ -87,7 +88,16 @@ struct env_handle {
   // at it would miss an incumbent keyed by identity alone -- and reach libmdbx,
   // which still holds the lock file named after that path and blocks on it
   // forever. The lock file is named after the path, so the path has to be a key.
+  // `lock_key` is the identity of the lock file, and is the key that survives
+  // an unlinked data file on a filesystem where two spellings are one file. On
+  // APFS and NTFS `Foo.mdbx` and `foo.mdbx` are one file and one lock file, but
+  // two different path keys; while the data file exists its identity bridges
+  // them, and once it is unlinked nothing did -- the open reached libmdbx and
+  // blocked on the shared lock. The lock file is still there for as long as the
+  // environment is open, so stat()ing the incoming spelling's lock file lands on
+  // the incumbent's inode however the name was cased or normalised.
   std::string key;
+  std::string lock_key;
   std::string path_key;
 
   // The path the caller wrote, kept so the refusal can name the spelling the

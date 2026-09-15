@@ -235,12 +235,18 @@ db_name <- function(db, txn) {
     return(name)
   }
 
-  if (!identical(token, attr(txn, "token"))) {
-    # Same path, different token: the environment it was opened in has been
-    # closed and another opened in its place. Naming the path twice would read
-    # as a mistake, so say what actually happened.
+  # Both must match, not the token alone. A token collision is possible across
+  # a fork() -- the counter it is minted from is duplicated -- and either field
+  # alone can be rewritten from R; requiring both means a handle has to agree
+  # with the transaction about *which* open at *which* place, and a record that
+  # fits only one of those is refused. The path decides which message: a
+  # different place is one refusal, the same place under a different open is the
+  # other, and naming one path twice would read as a mistake.
+  same_token <- identical(token, attr(txn, "token"))
+  same_path <- identical(path, attr(txn, "path"))
+  if (!same_token || !same_path) {
     stop(
-      if (identical(path, attr(txn, "path"))) {
+      if (same_path) {
         sprintf(paste0(
           "this database handle belongs to an environment at '%s' that has ",
           "since been closed; the one open there now is a different ",

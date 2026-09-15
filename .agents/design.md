@@ -179,12 +179,23 @@ open environment's data file and `stat()` can no longer answer for that path, so
 misses an incumbent keyed by identity and reaches libmdbx — which still holds the lock file *named
 after the path* and blocks on it forever in this same single-threaded process.
 
-So an environment carries **two** keys, and a match on either is a match: the data file's identity,
-and the canonical spelling. The path key also covers the case where the data file has been replaced
-rather than merely unlinked, which is a genuine conflict — the replacement would share the lock file
-the incumbent still holds — and the case of a filesystem that keeps no file index at all (FAT and
-exFAT do not, nor do some network redirectors), where identity would otherwise come back all zeros
-and collapse every file on the volume onto one key.
+So an environment carries **three** keys, and a match on any is a match: the data file's identity,
+the **lock file's** identity, and the canonical spelling.
+
+The lock file's identity is there because the path key is not enough either. It carries the basename
+as typed, and on a case-insensitive or normalisation-insensitive filesystem — APFS, the macOS
+default, and NTFS — `Foo.mdbx` and `foo.mdbx` are one file, one lock file, and two different path
+keys. While the data file exists its identity bridges them; once it is unlinked, nothing did, and the
+open reached libmdbx and blocked. The second attempt at this keying reintroduced the hang that way.
+The lock file is the resource that actually collides, and it is still on disk for as long as the
+environment is open, so `stat()`ing the incoming spelling's lock file lands on the incumbent's inode
+however the name was cased or normalised. Its name is derived from libmdbx's own constants: `-lck`
+appended in the single-file layout, `mdbx.lck` beside `mdbx.dat` in the directory layout.
+
+The path key remains for the last case, a lock file that is itself gone, where refusing is the
+conservative answer. It also covers a filesystem that keeps no file index at all (FAT and exFAT do
+not, nor do some network redirectors), where identity would otherwise come back all zeros and
+collapse every file on the volume onto one key.
 
 Identity is also not knowable before the file exists, which `create = TRUE` routinely means, so the
 keys are computed before the open — every way out of `mdbx_env_open_()` needs them, including the
@@ -205,11 +216,20 @@ same-named database somewhere else. The path was the first answer, and it is wro
 environment can be closed, its files deleted, and another created at the same path. The handle
 then matched, and went on reading and writing in a replacement it has nothing to do with.
 
-A path names a place; the token names an *open*. It is a process-local counter, which is enough:
-handles do not survive `fork()` and are never serialised, so it only has to be unique among the
-opens of one process. The path stays on the handle alongside it, so a refusal can still say where —
-and when the paths are equal, the refusal says that the environment was closed and replaced rather
-than naming one path twice.
+A path names a place; the token names an *open*. It is a counter with the process id folded in.
+The counter alone was the first answer and was wrong on one axis: `fork()` duplicates it, so a
+child's next open and the parent's next open minted the same number — and a handle record *can*
+cross back from a forked worker, as an ordinary list returned through `mccollect()`. It then matched
+an unrelated environment in the parent, which is the wrong-database access the token exists to
+refuse. Within one process the counter is unique; across the fork, the pid is.
+
+A handle must match on **both** token and path, not the token alone. Either field can be rewritten
+from R, and requiring both means a record has to agree with the transaction about *which open* at
+*which place*; forging one of the two is not enough. (Forging both still passes — the binding is
+enforced in R, against R-writable fields, and closing that needs the token plumbed natively through
+every `db=` entry point. That is a separate change, recorded as open.) The path decides which
+refusal is given: a different place is one message, the same place under a different open is the
+other, and naming one path twice would read as a mistake.
 
 ### A panicked environment's path — **settled in the code review**
 
