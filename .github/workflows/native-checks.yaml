@@ -111,21 +111,27 @@ jobs:
             devtools::test(shuffle = TRUE, stop_on_failure = TRUE)
           }
 
-  # Pinned to a branch of r-actions (PR pedrobtz/r-actions#7) rather than @v1
-  # until that lands and v1 moves. Two inputs, both CI-only, nothing shipped:
-  #   valgrind-opts -- R's own --use-valgrind invocation does not set
-  #     --leak-check=full, so a "definitely lost" total arrives with no stack
-  #     and cannot be attributed. A round-1 regression on this branch leaks
-  #     ~20 KB in the main test process; this is how we find out what.
-  #   cppflags -- -DENABLE_MEMCHECK is libmdbx's own mechanism for annotating
-  #     the page padding it writes deliberately uninitialised, so those bytes
-  #     stop being reported on every commit. The runner's valgrind package
-  #     ships the header it needs.
+  # Pinned to a branch of r-actions (PR pedrobtz/r-actions#8) rather than @v1
+  # until that lands and v1 moves. CI-only; nothing shipped changes.
+  #
+  # --leak-check=full because R's own --use-valgrind does not set it, so a
+  # "definitely lost" total arrives with no stack and cannot be attributed.
+  #
+  # The suppression file covers exactly two established-benign classes, both
+  # with their stacks recorded in tools/valgrind.supp: libmdbx writing page
+  # padding it never initialised, and the MDBX_env/MDBX_txn this package
+  # deliberately abandons after a libmdbx panic instead of re-entering a
+  # library that has rejected its own invariants.
+  #
+  # -DENABLE_MEMCHECK was tried here and reverted. It is libmdbx's switch for
+  # finding bugs *inside libmdbx*, not for annotating its padding away: it
+  # raised the uninitialised-value contexts from 2 to 13, and it shrinks the
+  # default geometry enough to fail the reservation test in test-env.R.
   valgrind:
-    uses: pedrobtz/r-actions/.github/workflows/valgrind.yml@5cb1b44a2b4e5cf126d12852ad9485a110628d33
+    uses: pedrobtz/r-actions/.github/workflows/valgrind.yml@6857cc37109b39743c492181d76e4600195cd743
     with:
       valgrind-opts: "--leak-check=full --track-origins=yes --show-leak-kinds=definite,indirect"
-      cppflags: "-DENABLE_MEMCHECK"
+      suppressions: "tools/valgrind.supp"
 
   lto:
     uses: pedrobtz/r-actions/.github/workflows/lto.yml@v1

@@ -1,0 +1,93 @@
+# Valgrind suppressions for the native-checks valgrind leg. Maintainer-only:
+# tools/ is in .Rbuildignore, so this never reaches the tarball, and nothing
+# about the shipped build changes because of it.
+#
+# Two classes of finding are suppressed, both established from real stacks in
+# the run for dc48c1f (artifact valgrind-check, tests/testthat.Rout.fail).
+# Everything else still fails the leg.
+#
+# Read this before adding an entry: a suppression is a promise that a finding
+# is understood, not a way to quiet one that is not.
+
+# ---------------------------------------------------------------------------
+# 1. libmdbx writes whole pages, including padding it never initialised.
+#
+# A page is the unit of I/O, and the bytes past the end of the data in it are
+# written as they are. That is libmdbx's design, not a defect, and it predates
+# this package -- the frames below are entirely vendored. It was reported as
+# two contexts on every commit of this branch.
+#
+# Anchored on mdbx_txn_commit_ex so that only the commit path is covered; the
+# `...` absorbs the inlined osal_pwrite/osal_ioring_write/iov_write/txn_write
+# frames, whose names valgrind resolves inconsistently under -O2.
+#
+# NOT an attempt to hide a real uninitialised-memory bug in this package: no
+# frame of ours appears in either stack, and any finding that reaches a
+# pwrite from anywhere other than a commit is still reported.
+{
+   libmdbx: page padding written by txn_commit (pwritev)
+   Memcheck:Param
+   pwritev(vector[1])
+   ...
+   fun:mdbx_txn_commit_ex
+   ...
+}
+{
+   libmdbx: page padding written by txn_commit (pwrite)
+   Memcheck:Param
+   pwrite64(buf)
+   ...
+   fun:mdbx_txn_commit_ex
+   ...
+}
+
+# ---------------------------------------------------------------------------
+# 2. An environment or transaction deliberately abandoned after a panic.
+#
+# When libmdbx raises an assertion failure, this package never hands the handle
+# back to it: close_handle() clears the pointer and returns without calling
+# mdbx_env_close(), because re-entering a library that has just rejected its
+# own invariants is how a bad situation becomes a crash. The memory is given up
+# on purpose and the process keeps it until it exits. CLAUDE.md states the
+# rule; the code has behaved this way since before the current branch.
+#
+# It became visible here only because tests added on this branch explicitly
+# close a poisoned environment, which drops the last pointer to the MDBX_env
+# and moves it from "still reachable" to "definitely lost". The behaviour did
+# not change; its accounting did.
+#
+# Honest limit, worth knowing before trusting these: the allocation stack of a
+# deliberately abandoned environment is identical to that of one leaked by a
+# genuine bug -- the panic happens later and leaves no trace in it. So these
+# three entries do cover a real leak of an MDBX_env or MDBX_txn, if one is ever
+# introduced on the open or begin path. They are kept narrow (these three
+# allocation sites, definite and indirect only) to bound that, and the
+# lifecycle tests plus mdbx_env_open_count_() are what actually guard the
+# invariant they cannot.
+{
+   mdbx: MDBX_env abandoned after a libmdbx panic (create)
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect
+   fun:calloc
+   ...
+   fun:mdbx_env_create
+   ...
+}
+{
+   mdbx: MDBX_env internals abandoned after a libmdbx panic (open)
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect
+   fun:calloc
+   ...
+   fun:mdbx_env_open
+   ...
+}
+{
+   mdbx: MDBX_txn abandoned after a libmdbx panic (begin)
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect
+   fun:calloc
+   ...
+   fun:mdbx_txn_begin_ex
+   ...
+}
