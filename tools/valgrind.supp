@@ -71,6 +71,11 @@
 # "still reachable" to "definitely lost". The behaviour did not change; its
 # accounting did.
 #
+# `fun:*alloc` rather than a named allocator: libmdbx reaches these paths
+# through malloc, calloc, realloc and aligned_alloc, and pinning one of them
+# suppressed 60 blocks while leaving 7 reported. The anchor is what bounds the
+# entry, not the allocator.
+#
 # Honest limit, worth knowing before trusting these: the allocation stack of a
 # deliberately abandoned environment is identical to that of one leaked by a
 # genuine bug -- the panic happens later and leaves no trace in it. So these
@@ -83,7 +88,7 @@
    mdbx: MDBX_env abandoned after a libmdbx panic (create)
    Memcheck:Leak
    match-leak-kinds: definite,indirect
-   fun:calloc
+   fun:*alloc
    ...
    fun:mdbx_env_create
    ...
@@ -92,7 +97,7 @@
    mdbx: MDBX_env internals abandoned after a libmdbx panic (open)
    Memcheck:Leak
    match-leak-kinds: definite,indirect
-   fun:calloc
+   fun:*alloc
    ...
    fun:mdbx_env_open
    ...
@@ -101,7 +106,7 @@
    mdbx: MDBX_txn abandoned after a libmdbx panic (begin)
    Memcheck:Leak
    match-leak-kinds: definite,indirect
-   fun:calloc
+   fun:*alloc
    ...
    fun:mdbx_txn_begin_ex
    ...
