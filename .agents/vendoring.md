@@ -99,10 +99,11 @@ scripts; either works, but do not mix them.
 
 ## Local patches
 
-The vendored sources are **not pristine**: four patches route libmdbx's panic and logging paths
-through R's API, remove nine diagnostic suppressions, and sidestep a false-positive
-`-Warray-bounds` from Rtools' MinGW headers, so that `R CMD check --as-cran` reports no warnings
-and libmdbx cannot terminate the R session. They must be re-applied whenever this pin moves.
+The vendored sources are **not pristine**: five patches route libmdbx's panic and logging paths
+through R's API, remove nine diagnostic suppressions, sidestep a false-positive `-Warray-bounds`
+from Rtools' MinGW headers, and stop the pre-C23 `bool`/`nullptr` compatibility macros from
+shadowing the C23 keywords, so that `R CMD check --as-cran` reports no warnings and libmdbx cannot
+terminate the R session. They must be re-applied whenever this pin moves.
 
 **The authoritative record is [../tools/patches/](../tools/patches/)**, which lives in the source
 repository only — `tools/` is excluded from the package build. This section keeps the narrative.
@@ -111,7 +112,10 @@ reproduce the vendored tree byte-for-byte. `inst/COPYRIGHTS` describes the same 
 which is what travels in the tarball as the Apache-2.0 section 4(b) notice.
 
 The upstream digests recorded above are the *pre-patch* values, and remain the thing to verify a
-freshly downloaded amalgamation against.
+freshly downloaded amalgamation against. All three source files are now patched — `mdbx.h` joined
+`mdbx.c` and `mdbx-internals.h` with patch 5 — so none of those three digests matches what is on
+disk; `tools/patches/README.md` carries the post-patch values. `LICENSE`, `NOTICE` and `COPYRIGHT`
+are still verbatim.
 
 ### Why patch at all
 
@@ -196,6 +200,39 @@ non-portable and warns that suppressing diagnostics hides real problems on untes
 and generating the flag from `configure.win` is called out as unsafe for the same reason. This is
 the only patch in the series that changes generated code rather than just diagnostics, and it is
 also the only one whose effect is confined to a single toolchain.
+
+### Patch 5 — `bool`/`true`/`false`/`nullptr` yield to the C23 keywords
+
+C23 promotes all four from library macros to keywords. libmdbx still defines them for the C build
+behind `#ifndef bool` / `!defined(nullptr)`, and those guards stay true under C23 — a keyword is
+not a macro — so clang reports `keyword is hidden by macro definition` (`-Wkeyword-macro`) four
+times, which `R CMD check` counts as significant warnings. Each guard gained the missing
+`__STDC_VERSION__ < 202311L` clause.
+
+**Why no CI leg caught this.** `-Wkeyword-macro` is clang-only — GCC has no such diagnostic, which
+rules out the Ubuntu and Windows legs — and it only fires in C23 mode. Apple clang 21 on the macOS
+leg defaults to `__STDC_VERSION__ 201710L`. CRAN's Debian leg compiles C as `clang-23 -std=gnu23`,
+explicitly, which is the one configuration that sees it.
+
+That gap is now closed on both ends. `.github/workflows/R-CMD-check.yaml` runs
+`R CMD check --as-cran` in the R-hub containers built to match the two r-devel Linux flavors —
+`ubuntu-clang` for `r-devel-linux-x86_64-debian-clang`, `ubuntu-gcc16` for the GCC 16 one — and
+fails on a WARNING. `tools/update-libmdbx.sh` lists a local gnu23 compile as a post-bump step,
+which is the same check a few seconds sooner.
+
+**Behaviour-neutral, and verified so:** `clang -S -O2` of `mdbx.c` against the patched and
+unpatched headers is byte-identical under both `-std=gnu17`, where the macros survive, and
+`-std=gnu23`, where they are now dropped in favour of the keywords — modulo the `__TIME__` stamp
+libmdbx embeds in its build string.
+
+**Not fixed upstream.** libmdbx master carries the same code at the same lines as v0.14.3. Worth
+sending upstream, and worth re-checking at the next version bump.
+
+**Rejected alternatives:** `-Wno-keyword-macro` in `PKG_CFLAGS`, for the same reason it was
+rejected in patch 4 — Writing R Extensions treats `-Wno-*` as non-portable, and it trades this
+WARNING for a "checking compilation flags used" one. And `SystemRequirements: C17`, which would
+pin the whole package back to a standard CRAN is actively moving off in order to avoid a
+diagnostic about four lines.
 
 ### Reproducing
 

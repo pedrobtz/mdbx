@@ -53,8 +53,14 @@ R CMD INSTALL --preclean .                          # exercise src/Makevars dire
 ```
 
 `devtools`, `roxygen2`, `testthat`, `pkgbuild`, and `rcmdcheck` are installed against R 4.6.
-CI ([.github/workflows/R-CMD-check.yaml](.github/workflows/R-CMD-check.yaml)) runs `R CMD check`
-on macOS, Windows, and Ubuntu (devel/release/oldrel-1).
+CI ([.github/workflows/R-CMD-check.yaml](.github/workflows/R-CMD-check.yaml)) is a caller of
+`pedrobtz/r-actions/.github/workflows/r-cmd-check.yml`, which runs `R CMD check --as-cran` in two
+jobs: `runners` on macOS, Windows and Ubuntu (release/oldrel-1), and `containers` in the two R-hub
+images matching CRAN's r-devel Linux flavors — `ubuntu-clang` (clang 23, C built as `-std=gnu23`)
+and `ubuntu-gcc16`. Both fail on a WARNING. The container half is the leg that would have caught
+the C23 keyword-macro warnings before CRAN did; no GitHub runner is that combination. There is
+deliberately no R-devel Ubuntu row, because the containers are R-devel on Linux already, on the
+compilers CRAN actually uses.
 
 Tests live in `tests/testthat/`: `test-env.R`, `test-txn.R`, `test-data.R`, `test-stat.R`,
 `test-scan.R`, `test-flags.R`, `test-fork.R`, `test-process.R`, `test-native-safety.R`,
@@ -165,9 +171,10 @@ Two Python bindings are used as prior art, and the design deliberately follows o
 
 ## The vendor tree is patched
 
-`src/vendor/libmdbx/` is **not** pristine. Four patches in `tools/patches/` route libmdbx's panic
-and logging through R's API, drop nine `#pragma diagnostic ignored` lines, and sidestep a
-false-positive `-Warray-bounds` from Rtools' MinGW headers. They are applied **by the maintainer
+`src/vendor/libmdbx/` is **not** pristine. Five patches in `tools/patches/` route libmdbx's panic
+and logging through R's API, drop nine `#pragma diagnostic ignored` lines, sidestep a
+false-positive `-Warray-bounds` from Rtools' MinGW headers, and keep the pre-C23
+`bool`/`nullptr` macros from shadowing the C23 keywords. They are applied **by the maintainer
 during a version bump**, never at build time — `tools/update-libmdbx.sh` re-vendors and replays
 the series. Never hand-edit the vendored sources: add or change a patch, regenerate, and update
 the post-patch digests in `tools/patches/README.md`. The *Local patches* section of

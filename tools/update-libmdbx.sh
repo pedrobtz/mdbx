@@ -52,7 +52,7 @@ for p in "${patches}"/*.patch; do
 done
 
 echo "==> post-patch checksums (record these in tools/patches/README.md)"
-( cd "${vendor}" && shasum -a 256 mdbx.c mdbx-internals.h ) | sed 's/^/    /'
+( cd "${vendor}" && shasum -a 256 mdbx.c mdbx.h mdbx-internals.h ) | sed 's/^/    /'
 
 cat <<'EOF'
 
@@ -63,4 +63,10 @@ cat <<'EOF'
     4. R CMD INSTALL --preclean .   - must build with no warnings
     5. nm -u src/vendor/libmdbx/mdbx.o | grep -E 'assert|stderr'  - must be empty
     6. R CMD check --as-cran        - must report no WARNINGs
+    7. clang -std=gnu23 -Wall -pedantic ... -c vendor/libmdbx/mdbx.c
+                                    - a fast local stand-in for the flavor
+                                      the ubuntu-clang container leg of
+                                      R-CMD-check.yaml checks properly:
+                                      CRAN's Debian leg builds C as gnu23,
+                                      and no ordinary runner does
 EOF
