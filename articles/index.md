@@ -13,3 +13,10 @@
 
   The patterns you need to use mdbx well: transactions, byte-oriented
   storage, listing, batching, durability, and concurrency.
+
+- [A worked example, end to
+  end](https://pedrobtz.github.io/mdbx/articles/workflow.md):
+
+  One small application built with mdbx, from opening the file to
+  dropping a database and closing it — and every exported function used
+  along the way.

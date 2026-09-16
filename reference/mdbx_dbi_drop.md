@@ -23,8 +23,9 @@ mdbx_dbi_drop(txn, db, delete = FALSE)
 
   An `mdbx_dbi` object from
   [`mdbx_dbi_open()`](https://pedrobtz.github.io/mdbx/reference/mdbx_dbi_open.md),
-  or `NULL` for the main database — which can be emptied but not
-  deleted.
+  or `NULL` for the main database — which can never be deleted, and can
+  be emptied only while no named database exists to be destroyed along
+  with it.
 
 - delete:
 
@@ -35,6 +36,14 @@ mdbx_dbi_drop(txn, db, delete = FALSE)
 `NULL`, invisibly.
 
 ## Details
+
+The main database is the exception, twice over. It is what records the
+named ones, so it cannot be deleted at all: `db = NULL` with
+`delete = TRUE` is an error rather than the quiet emptying 'libmdbx'
+would perform. And emptying it destroys every named database along with
+it, for the same reason — so that is refused too while any named
+database exists. Drop those by name first if you really mean to, or
+delete the main database's own keys individually.
 
 Emptying a database that holds records also resets its [sequence
 counter](https://pedrobtz.github.io/mdbx/reference/mdbx_dbi_sequence.md)
