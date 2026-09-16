@@ -85,6 +85,13 @@ mdbx_dbi_open <- function(txn, name, create = FALSE) {
 #' removes the database itself, after which the handle refers to nothing and
 #' reopening it needs `create = TRUE` again.
 #'
+#' The main database is the exception, twice over. It is what records the named
+#' ones, so it cannot be deleted at all: `db = NULL` with `delete = TRUE` is an
+#' error rather than the quiet emptying 'libmdbx' would perform. And emptying it
+#' destroys every named database along with it, for the same reason — so that is
+#' refused too while any named database exists. Drop those by name first if you
+#' really mean to, or delete the main database's own keys individually.
+#'
 #' Emptying a database that holds records also resets its
 #' [sequence counter][mdbx_dbi_sequence] to zero, because 'libmdbx' rewrites
 #' the database's record and the counter lives in it. (Emptying one that is
@@ -98,7 +105,8 @@ mdbx_dbi_open <- function(txn, name, create = FALSE) {
 #' @param txn An `mdbx_txn` object from [mdbx_txn_begin()], opened for writing.
 #'   Both emptying and deleting are writes, so a read transaction is refused.
 #' @param db An `mdbx_dbi` object from [mdbx_dbi_open()], or `NULL` for the main
-#'   database — which can be emptied but not deleted.
+#'   database — which can never be deleted, and can be emptied only while no
+#'   named database exists to be destroyed along with it.
 #' @param delete If `TRUE`, delete the database rather than just emptying it.
 #' @return `NULL`, invisibly.
 #' @seealso [mdbx_dbi_open()]

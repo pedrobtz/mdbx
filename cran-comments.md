@@ -2,6 +2,30 @@
 
 0 errors | 0 warnings | 0 notes
 
+## Resubmission
+
+This is a resubmission. In response to the reviewer's comment:
+
+* `\value` was missing from `man/mdbx_scan_max.Rd`. It is now documented:
+  `mdbx_scan_max` is exported data rather than a function, and the tag states
+  the class and length of the object (a length-one numeric vector), its value,
+  and what that value governs -- the number of records above which `mdbx_keys()`
+  and `mdbx_items()` refuse a scan that was given no `limit`.
+
+  Every other exported function already carried `\value`. The two remaining
+  topics without one, `?mdbx-concurrency` and `?mdbx-errors`, document concepts
+  rather than objects: neither has a `\usage` section and neither is callable.
+
+This submission also carries one bug fix, in `mdbx_dbi_drop()`. Emptying the
+unnamed main database destroyed every named database in the environment,
+silently and irreversibly, because 'libmdbx' stores each named database as a
+record inside the main one and purges the whole tree. A caller following the
+documentation ("removes every record but keeps the database") could lose data,
+so the operation is now refused while any named database exists. The related
+case of `delete = TRUE` on the main database, which 'libmdbx' accepts and
+ignores while reporting success, is refused as well. Both are covered by new
+tests.
+
 ## Notes for the reviewer
 
 This is a new submission.

@@ -11,7 +11,8 @@ mdbx_dbi_drop(txn, db, delete = FALSE)
 Both emptying and deleting are writes, so a read transaction is refused.}
 
 \item{db}{An \code{mdbx_dbi} object from \code{\link[=mdbx_dbi_open]{mdbx_dbi_open()}}, or \code{NULL} for the main
-database — which can be emptied but not deleted.}
+database — which can never be deleted, and can be emptied only while no
+named database exists to be destroyed along with it.}
 
 \item{delete}{If \code{TRUE}, delete the database rather than just emptying it.}
 }
@@ -24,6 +25,13 @@ removes the database itself, after which the handle refers to nothing and
 reopening it needs \code{create = TRUE} again.
 }
 \details{
+The main database is the exception, twice over. It is what records the named
+ones, so it cannot be deleted at all: \code{db = NULL} with \code{delete = TRUE} is an
+error rather than the quiet emptying 'libmdbx' would perform. And emptying it
+destroys every named database along with it, for the same reason — so that is
+refused too while any named database exists. Drop those by name first if you
+really mean to, or delete the main database's own keys individually.
+
 Emptying a database that holds records also resets its
 \link[=mdbx_dbi_sequence]{sequence counter} to zero, because 'libmdbx' rewrites
 the database's record and the counter lives in it. (Emptying one that is

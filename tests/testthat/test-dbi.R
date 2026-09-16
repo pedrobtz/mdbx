@@ -295,6 +295,83 @@ test_that("a database can be emptied or deleted", {
   mdbx_env_close(env)
 })
 
+test_that("the main database can be emptied but not deleted", {
+  env <- multi_env()
+
+  mdbx_with_write(env, function(txn) {
+    mdbx_put(txn, "k", "v")
+    mdbx_dbi_open(txn, "named", create = TRUE)
+  })
+
+  # libmdbx accepts this and quietly does something else: mdbx_drop() empties
+  # the table, then returns success without ever consulting `del` for a core
+  # DBI. The caller would be told the deletion happened.
+  mdbx_with_write(env, function(txn) {
+    expect_error(mdbx_dbi_drop(txn, NULL, delete = TRUE), "cannot be deleted")
+  })
+
+  # Emptying is refused too while a named database would go with it: libmdbx
+  # purges the whole main tree, and the named databases *are* records in it.
+  mdbx_with_write(env, function(txn) {
+    expect_error(mdbx_dbi_drop(txn, NULL), "would also destroy the named databases")
+  })
+
+  # Both refusals happened before anything was emptied, so they cost nothing.
+  mdbx_with_read(env, function(txn) {
+    expect_identical(mdbx_get(txn, "k"), "v")
+    expect_identical(mdbx_dbi_list(txn), "named")
+  })
+
+  # With the named database gone, emptying main is what it says it is.
+  mdbx_with_write(env, function(txn) {
+    mdbx_dbi_drop(txn, mdbx_dbi_open(txn, "named"), delete = TRUE)
+    mdbx_dbi_drop(txn, NULL)
+  })
+  mdbx_with_read(env, function(txn) {
+    expect_null(mdbx_get(txn, "k"))
+    expect_identical(mdbx_dbi_list(txn), character(0))
+  })
+
+  mdbx_env_close(env)
+})
+
+test_that("emptying main does not leave a handle reading a purged database", {
+  # The inconsistency the refusal exists to make unreachable: the transaction's
+  # cached handle used to go on answering from a tree libmdbx had already
+  # purged, so within one transaction mdbx_dbi_list() reported nothing while a
+  # handle opened moments earlier still returned its rows.
+  env <- multi_env()
+
+  mdbx_with_write(env, function(txn) {
+    mdbx_put(txn, "a", "1", db = mdbx_dbi_open(txn, "d1", create = TRUE))
+  })
+
+  mdbx_with_write(env, function(txn) {
+    handle <- mdbx_dbi_open(txn, "d1")
+    expect_error(mdbx_dbi_drop(txn, NULL), "would also destroy")
+
+    # Nothing was purged, so the handle and the listing still agree.
+    expect_identical(mdbx_dbi_list(txn), "d1")
+    expect_identical(mdbx_get(txn, "a", db = handle), "1")
+  })
+
+  mdbx_env_close(env)
+})
+
+test_that("emptying main in a read transaction names the read transaction", {
+  # The guard sits after writable_txn(), so a read transaction is told it cannot
+  # write rather than told about databases it would have destroyed.
+  env <- multi_env()
+  mdbx_with_write(env, function(txn) mdbx_dbi_open(txn, "d1", create = TRUE))
+
+  mdbx_with_read(env, function(txn) {
+    expect_error(mdbx_dbi_drop(txn, NULL), "read-only")
+    expect_error(mdbx_dbi_drop(txn, NULL, delete = TRUE), "read-only")
+  })
+
+  mdbx_env_close(env)
+})
+
 test_that("a listing shows what this transaction did, before it commits", {
   env <- multi_env()
 

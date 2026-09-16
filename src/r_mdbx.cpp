@@ -1841,12 +1841,85 @@ double mdbx_dbi_sequence_(cpp11::sexp txn, cpp11::strings db, double increment) 
   return static_cast<double>(context.result);
 }
 
+namespace {
+
+struct count_context {
+  mdbx_r::txn_handle *handle;
+  int count;
+  int rc;
+};
+
+// Stops at the first one. Only whether any exist decides the refusal below, and
+// counting them all walks every record of the main database -- a full tree scan
+// paid by the common case to learn there is nothing to refuse. A non-zero
+// return ends the enumeration and is handed back by mdbx_enumerate_tables(),
+// which the header documents.
+int count_visit(void *ctx, const MDBX_txn *, const MDBX_val *,
+                MDBX_db_flags_t, const struct MDBX_stat *,
+                MDBX_dbi) MDBX_CXX17_NOEXCEPT {
+  static_cast<count_context *>(ctx)->count = 1;
+  return MDBX_RESULT_TRUE;
+}
+
+void count_call(void *data) {
+  count_context *context = static_cast<count_context *>(data);
+  context->rc = mdbx_enumerate_tables(context->handle->txn, count_visit, context);
+
+  // The visitor's own stop signal, not a failure.
+  if (context->rc == MDBX_RESULT_TRUE)
+    context->rc = MDBX_SUCCESS;
+}
+
+void poison_count(void *data) {
+  mdbx_r::poison_txn(static_cast<count_context *>(data)->handle);
+}
+
+// Whether this transaction can see any named database.
+int count_named_tables(mdbx_r::txn_handle *handle) {
+  count_context context = {handle, 0, MDBX_SUCCESS};
+  mdbx_r::guard(count_call, &context, poison_count);
+  mdbx_r::check(context.rc);
+  return context.count;
+}
+
+} // namespace
+
 // Empty a database, or delete it outright.
 [[cpp11::register]]
 void mdbx_dbi_drop_(cpp11::sexp txn, cpp11::strings db, bool del) {
   // Emptying and deleting are both writes, and libmdbx reports a read
   // transaction's refusal as a bare EACCES. mdbx_put() has always named it.
   mdbx_r::txn_handle *handle = writable_txn(txn);
+
+  // Emptying the main database destroys every named database with it: a named
+  // database *is* a record in the main tree, and mdbx_drop() purges the whole
+  // tree. Nothing about "removes every record but keeps the database" prepares
+  // a caller for that, and it cannot be made consistent afterwards -- this
+  // transaction's cached handles go on answering from purged trees, and libmdbx
+  // keeps its own environment-level record of the name, so after the commit
+  // mdbx_dbi_open() still succeeds for a database whose reads then fail with
+  // MDBX_BAD_DBI. Repairing that would need mdbx_dbi_close(), which this
+  // package does not call. So refuse while there is anything to lose; emptying
+  // the main database of an environment with no named databases is exactly as
+  // safe as it sounds, and stays allowed.
+  //
+  // After writable_txn(), so that a read transaction is told it cannot write
+  // rather than told about databases it would have destroyed.
+  if (!del && db.size() == 0 && count_named_tables(handle) > 0)
+    cpp11::stop("emptying the main database would also destroy the named "
+                "databases in this environment, because each one is a record "
+                "in the main database. Drop them by name first if that is what "
+                "you want, or delete the main database's keys individually");
+
+  // The main database cannot be deleted -- it is where the named ones are
+  // recorded, so an environment without it is not an environment. libmdbx does
+  // not say so: mdbx_drop() empties the table, then returns success without
+  // ever looking at `del` for a core DBI, so the caller would be told that the
+  // deletion they asked for had happened. Refuse before anything is emptied.
+  if (del && db.size() == 0)
+    cpp11::stop("the main database cannot be deleted, only emptied: it is what "
+                "records the named databases. Use delete = FALSE to empty it");
+
   ensure_dbi(handle, db);
 
   drop_context context = {handle, del, MDBX_SUCCESS};
