@@ -111,8 +111,21 @@ jobs:
             devtools::test(shuffle = TRUE, stop_on_failure = TRUE)
           }
 
+  # --leak-check=full because R's own --use-valgrind does not set it, so a
+  # "definitely lost" total arrives with no stack and cannot be attributed
+  # from the artifact.
+  #
+  # The suppression file covers exactly two established-benign classes, both
+  # with their stacks recorded in tools/valgrind.supp: libmdbx writing page
+  # padding it never initialised, and the MDBX_env/MDBX_txn this package
+  # deliberately abandons after a libmdbx panic instead of re-entering a
+  # library that has rejected its own invariants. tools/ is in .Rbuildignore,
+  # so none of this reaches the tarball.
   valgrind:
     uses: pedrobtz/r-actions/.github/workflows/valgrind.yml@v1
+    with:
+      valgrind-opts: "--leak-check=full --track-origins=yes --show-leak-kinds=definite,indirect"
+      suppressions: "tools/valgrind.supp"
 
   lto:
     uses: pedrobtz/r-actions/.github/workflows/lto.yml@v1
