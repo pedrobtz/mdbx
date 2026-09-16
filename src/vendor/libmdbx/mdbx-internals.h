@@ -357,9 +357,7 @@
 #endif
 #endif /* __extern_C */
 
-/* R package patch: C23 makes nullptr a keyword. See tools/patches. */
-#if !defined(nullptr) && (!defined(__cplusplus) || (__cplusplus < 201103L && !defined(_MSC_VER))) &&                    \
-    (defined(__cplusplus) || !defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L)
+#if !defined(nullptr) && (!defined(__cplusplus) || (__cplusplus < 201103L && !defined(_MSC_VER)))
 #define nullptr NULL
 #endif
 

@@ -412,8 +412,7 @@ typedef mode_t mdbx_mode_t;
 
 /*----------------------------------------------------------------------------*/
 
-/* R package patch: C23 makes bool/true/false keywords. See tools/patches. */
-#if !defined(__cplusplus) && (!defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L)
+#ifndef __cplusplus
 #ifndef bool
 #define bool _Bool
 #endif
@@ -423,7 +422,7 @@ typedef mode_t mdbx_mode_t;
 #ifndef false
 #define false (0)
 #endif
-#endif /* bool without __cplusplus, before C23 */
+#endif /* bool without __cplusplus */
 
 /** Workaround for old compilers without support for C++17 `noexcept`. */
 #if defined(DOXYGEN)
