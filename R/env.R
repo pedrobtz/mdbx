@@ -117,20 +117,26 @@ mdbx_env_open <- function(path,
     )
   }
 
-  mdbx_env_open_(path, env_key(path, subdir), readonly, subdir, max_dbs,
+  mdbx_env_open_(path, env_data_file(path, subdir), readonly, subdir, max_dbs,
                  map_size, max_readers, mode, flags)
 }
 
-# How an environment is identified in the registry of the ones this process has
-# open, so that two spellings of one environment collide there instead of
-# reaching libmdbx and failing on its lock file.
+# Which data file a path names. The native layer turns this spelling into the
+# key it identifies open environments by, so that two names for one environment
+# collide there instead of reaching libmdbx and hanging on its lock file.
 #
-# normalizePath() resolves `.`, `..` and symlinks and picks the platform's own
-# spelling, but only for a path that exists -- and `create = TRUE` is routinely
-# given one that does not. The directory always exists by the time an open can
-# succeed, so it is the directory that is resolved and the basename that is
-# carried over untouched. A path whose own directory is missing is left as it
-# was written; no environment can live there, and libmdbx refuses it first.
+# Only the spelling is settled here. Relating two *different* names for one
+# environment is env_keys_for()'s job in src/r_mdbx.cpp, and it does it by the
+# file's identity rather than by its name -- a hard link is one file under two
+# names, and no amount of string work relates those. So resolving symlinks here
+# would buy nothing this does not already get for free.
+#
+# The directory is still resolved, so that the spelling is canonical for the one
+# case identity cannot answer: a data file that does not exist yet.
+# normalizePath() manages that much because the directory always exists by the
+# time an open can succeed, while the data file under `create = TRUE` routinely
+# does not. A path whose own directory is missing is left as it was written; no
+# environment can live there, and libmdbx refuses it first.
 #
 # A directory-layout environment keeps its data in `mdbx.dat`, so that is the
 # name both of its spellings share: the directory as `subdir = TRUE` takes it,
@@ -141,19 +147,31 @@ mdbx_env_open <- function(path,
 # existing single-file environment as a directory that cannot exist, and the
 # second open of that environment would miss the registry and reach libmdbx.
 #
-# The key is compared, never shown -- the refusal prints the paths the caller
-# and the incumbent wrote -- so it need only be equal for equal environments.
 # A path directly under the root directory picks up a doubled slash from
-# file.path("/", "x"); every spelling of it picks up the same one.
-env_key <- function(path, subdir) {
-  key <- file.path(
+# file.path("/", "x"); harmless, since this is only ever stat()ed or compared
+# against another spelling that picks up the same one.
+#
+# One function rather than a rule per caller. mdbx_env_open() asks this twice --
+# once to say whether an environment exists, once to key the open registry --
+# and libmdbx settles the same question a third time and reports its answer back
+# through MDBX_NOSUBDIR. Three rules that must agree is how one spelling of an
+# environment comes to be keyed differently from another, which is the reopen
+# the registry exists to catch. Two of the three are now the same expression.
+# Returns the data file and nothing else. It is tempting to report the layout
+# alongside it, but this function does not decide that -- libmdbx does, and says
+# so through MDBX_NOSUBDIR once the open succeeds, which is what
+# print.mdbx_env() shows. A second answer here would be one more thing that has
+# to agree, which is the problem this function exists to remove.
+env_data_file <- function(path, subdir = FALSE) {
+  spelling <- file.path(
     normalizePath(dirname(path), winslash = "/", mustWork = FALSE),
     basename(path)
   )
-  if (dir.exists(key) || (subdir && !file.exists(key))) {
-    file.path(key, "mdbx.dat")
+
+  if (dir.exists(spelling) || (subdir && !file.exists(spelling))) {
+    file.path(spelling, "mdbx.dat")
   } else {
-    key
+    spelling
   }
 }
 
@@ -253,14 +271,10 @@ check_mode <- function(x) {
 # while containing no database at all, and libmdbx detects the directory layout
 # and happily creates one inside -- so `create = FALSE` used to create a
 # database in any existing empty directory.
+# An environment exists where its data file does. The layout decides which file
+# that is, and env_data_file() is the one place that decides it -- see there.
 env_exists <- function(path) {
-  if (!file.exists(path)) {
-    return(FALSE)
-  }
-  if (dir.exists(path)) {
-    return(file.exists(file.path(path, "mdbx.dat")))
-  }
-  TRUE
+  file.exists(env_data_file(path))
 }
 
 check_string <- function(x, arg) {

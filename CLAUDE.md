@@ -154,17 +154,49 @@ around `.Call()`. This is the main performance lesson recorded from the referenc
 
 ### Errors
 
-A central `mdbx_check(rc)` helper translates MDBX status codes to R conditions via
-`cpp11::stop()` (printf-style, throws rather than longjmping), preserving the original code. Not every non-`MDBX_SUCCESS` status is an error — "key not found" is expected to
-surface as `NULL` rather than a condition.
+A central `check(rc)` helper in `src/r_mdbx.cpp` translates MDBX status codes into **structured R
+conditions**, not bare strings. It builds a condition carrying `message`, `code` (the original
+MDBX status) and `name` (e.g. `"MDBX_MAP_FULL"`), classed
+`c("mdbx_<name>", "mdbx_error", "error", "condition")` — so callers can dispatch on
+`class = "mdbx_error"` or a specific subclass instead of matching message text, which is what the
+tests do wherever a status is platform-dependent.
+
+It signals through `base::stop()` rather than `cpp11::stop()`/`Rf_error()`, because those format a
+string and would discard the fields. cpp11 routes the call through `R_UnwindProtect`, so the R jump
+still resumes at the `.Call()` boundary with C++ destructors run. `cpp11::stop()` remains the right
+tool for this package's *own* refusals — argument contradictions, lifecycle violations — which carry
+no MDBX status.
+
+Not every non-`MDBX_SUCCESS` status is an error — "key not found" is expected to surface as `NULL`
+rather than a condition.
 
 ## Reference bindings
 
 Two Python bindings are used as prior art, and the design deliberately follows one of them:
 
-- **`jyj117/mdbx-py` (`clibmdbx`) — the model to follow.** Vendored amalgamation pinned to a
-  stable release with recorded SHA-256s, compiled into a single extension. Its macro set and
-  Windows link libraries are the source of the `Makevars` above.
+- **`jyj117/mdbx-py` (`clibmdbx`) — the model for packaging and API surface, and only those.**
+  Vendored amalgamation pinned to a stable release with recorded SHA-256s, compiled into a single
+  extension. Its macro set and Windows link libraries are the source of the `Makevars` above, and
+  its API shaped the flags-by-name vocabulary, the bytes-in/bytes-out contract and the missing-key
+  semantics.
+
+  **Do not treat it as the model for safety.** Read at `279d5ef`: it has no guard against opening
+  one environment twice in a process (`mdbx_env_open` is called directly, and there is no registry
+  of any kind), and it installs no assert hook, so a libmdbx assertion failure aborts the
+  interpreter. This package deliberately does more on both counts, and both mechanisms are where
+  the review regressions clustered — so when working on them, there is no upstream implementation
+  to check against.
+
+  Where it *should* be copied and was not: it keeps authoritative state in the C struct, where the
+  scripting language cannot rewrite it. See the safety comparison in
+  [.agents/roadmap.md](.agents/roadmap.md).
+- **`r-dbi/RSQLite` — the reference for R-side ownership**, not for MDBX. It is the closest analogue
+  to this package's actual difficulty: a file-based database reached through an external pointer, so
+  it faces R's finalizer ordering, mutability and fork hazards, which a Python binding never does. It
+  answers lifetime with C++ `shared_ptr` refcounting rather than R-level parent retention, which makes
+  collection order structurally irrelevant. [.agents/design.md](.agents/design.md) records why that
+  was not adopted here and what it would still be good for.
+
 - **`wtdcode/mdbx-py` — explicitly rejected.** Git submodule + CMake producing a standalone
   shared library loaded via `ctypes`. Both halves are unusable in an R package: a submodule does
   not survive `R CMD build`, and CRAN builders will not run CMake.

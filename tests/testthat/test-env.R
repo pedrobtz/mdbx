@@ -123,7 +123,7 @@ test_that("a close refused for an open transaction keeps the path taken", {
 })
 
 test_that("a directory-layout environment is refused the same way", {
-  dir <- file.path(tempdir(), sprintf("dup-%d", sample.int(1e6, 1)))
+  dir <- tempfile("dup-")
 
   env <- mdbx_env_open(dir, subdir = TRUE, map_size = test_map_size)
   expect_error(mdbx_env_open(dir, map_size = test_map_size),
@@ -134,8 +134,11 @@ test_that("a directory-layout environment is refused the same way", {
 })
 
 test_that("two spellings of one path are one environment", {
-  # The registry compares strings, so env_key() canonicalises them first.
-  # Without it each of these reaches libmdbx and fails on the lock file.
+  # env_data_file() canonicalises the directory, and env_keys_for() keys what it
+  # names by identity. Without them each reaches libmdbx, which coordinates
+  # through a lock file named after the path -- so a second name gets a second
+  # lock file, and then blocks forever on a lock this same single-threaded
+  # process is the one holding.
   dir <- tempfile("spell-")
   dir.create(dir)
   path <- file.path(dir, "c.mdbx")
@@ -197,6 +200,140 @@ test_that("a symlinked directory is the same environment", {
                "already open in this process")
 })
 
+test_that("an environment reached by a hard-linked data file is the same one", {
+  # A hard link is the case no canonicalisation whatever reaches: it is one file
+  # under two equally real names, and neither is a spelling of the other. It
+  # used to miss the registry and hang the session on libmdbx's lock file.
+  #
+  # Deliberately not skipped on Windows. Every other registry test passes
+  # whether or not file_identity() works there, because the path fallback
+  # matches the same spellings identity would -- this one does not, so it is
+  # what proves the Windows half of file_identity() does its job rather than
+  # merely compiling. Where hard links are unavailable (FAT, and any filesystem
+  # keeping no file index) file.link() fails first and the test skips.
+  dir <- tempfile("alias-")
+  dir.create(dir)
+  path <- file.path(dir, "c.mdbx")
+
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  on.exit(mdbx_env_close(env), add = TRUE)
+
+  hardlink <- file.path(dir, "hard.mdbx")
+  skip_if_not(isTRUE(suppressWarnings(file.link(path, hardlink))),
+              "could not create a hard link")
+
+  expect_error(mdbx_env_open(hardlink, map_size = test_map_size),
+               "already open in this process")
+
+  # The refusal still names both spellings, the caller's and the incumbent's.
+  message <- conditionMessage(tryCatch(
+    mdbx_env_open(hardlink, map_size = test_map_size), error = identity
+  ))
+  expect_match(message, hardlink, fixed = TRUE)
+  expect_match(message, sprintf("as '%s'", path), fixed = TRUE)
+})
+
+test_that("an environment reached by a symlinked data file is the same one", {
+  # The other case canonicalising cannot reach: env_data_file() resolves the dir
+  # and carries the basename over untouched, so a symlink at the final component
+  # went straight past the registry.
+  #
+  # Skipped on Windows, where creating one needs a privilege CI does not have.
+  skip_on_os("windows")
+
+  dir <- tempfile("alias-")
+  dir.create(dir)
+  path <- file.path(dir, "c.mdbx")
+
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  on.exit(mdbx_env_close(env), add = TRUE)
+
+  symlink <- file.path(dir, "sym.mdbx")
+  skip_if_not(isTRUE(suppressWarnings(file.symlink(path, symlink))),
+              "could not create a symlink")
+
+  expect_error(mdbx_env_open(symlink, map_size = test_map_size),
+               "already open in this process")
+})
+
+test_that("an environment whose data file was unlinked is still found", {
+  # Identity is not stable against the file going away. Keyed by identity alone,
+  # an open aimed at the unlinked path missed the incumbent and reached libmdbx
+  # -- which still holds the lock file named after that path, and blocks on it
+  # forever in this same single-threaded process. The path is a key for exactly
+  # this reason.
+  skip_on_os("windows")
+
+  path <- env_path()
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  mdbx_with_write(env, function(txn) mdbx_put(txn, "k", "v"))
+
+  unlink(path)
+  expect_false(file.exists(path))
+
+  expect_error(mdbx_env_open(path, map_size = test_map_size),
+               "already open in this process")
+
+  # A file recreated at the path is the same conflict, not a different one: it
+  # would share the lock file the incumbent still holds.
+  writeLines("not a database", path)
+  expect_error(mdbx_env_open(path, map_size = test_map_size),
+               "already open in this process")
+
+  mdbx_env_close(env)
+  unlink(c(path, paste0(path, "-lck")))
+})
+
+test_that("a respelled path on a case-insensitive filesystem is found after unlink", {
+  # The path key carries the basename as typed, and on APFS or NTFS `Foo.mdbx`
+  # and `foo.mdbx` are one file, one lock file, and two different path keys.
+  # While the data file exists its identity bridges them. Once it is unlinked
+  # nothing did: the open reached libmdbx and blocked on the shared lock. The
+  # lock file is still there for as long as the environment is open, so its
+  # identity is the key that answers here -- under either spelling.
+  dir <- tempfile("case-")
+  dir.create(dir)
+  writeLines("probe", file.path(dir, "Probe.txt"))
+  skip_if_not(file.exists(file.path(dir, "probe.txt")), "filesystem is case-sensitive")
+
+  upper <- file.path(dir, "Foo.mdbx")
+  lower <- file.path(dir, "foo.mdbx")
+
+  env <- mdbx_env_open(upper, map_size = test_map_size)
+  on.exit(mdbx_env_close(env), add = TRUE)
+
+  # Identity already covers this half.
+  expect_error(mdbx_env_open(lower, map_size = test_map_size),
+               "already open in this process")
+
+  unlink(upper)
+  skip_if(file.exists(upper), "could not unlink an open data file on this platform")
+
+  # Only the lock file is left to say so, and it has to say so for the other
+  # spelling. Without it this call does not fail -- it hangs.
+  expect_error(mdbx_env_open(lower, map_size = test_map_size),
+               "already open in this process")
+})
+
+test_that("an alias is openable once the environment it aliases is closed", {
+  # Keying by identity must not leave a spelling permanently spoken for.
+  skip_on_os("windows")
+
+  dir <- tempfile("alias-")
+  dir.create(dir)
+  path <- file.path(dir, "c.mdbx")
+  symlink <- file.path(dir, "sym.mdbx")
+
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  mdbx_with_write(env, function(txn) mdbx_put(txn, "k", "v"))
+  skip_if_not(file.symlink(path, symlink), "could not create a symlink")
+  mdbx_env_close(env)
+
+  aliased <- mdbx_env_open(symlink, map_size = test_map_size)
+  on.exit(mdbx_env_close(aliased), add = TRUE)
+  expect_identical(mdbx_with_read(aliased, function(txn) mdbx_get(txn, "k")), "v")
+})
+
 test_that("a subdir environment and its data file are the same environment", {
   # With subdir = TRUE the environment is the directory and its data lives in
   # mdbx.dat; that file is a second, perfectly ordinary spelling of it.
@@ -243,14 +380,20 @@ test_that("the registry of open paths does not grow", {
   # gc() first, as the live-handle tests below do: environments other tests
   # abandoned are still registered until their finalizers run, and the baseline
   # has to be taken once they have.
+  # Bounds, not equalities, against a count that is process-wide. R does not
+  # promise that any number of gc() calls runs a given finalizer, and the suite
+  # abandons environments everywhere -- so a baseline taken here can be met by
+  # an unrelated finalizer running mid-loop, failing an assertion about
+  # environments this test never touched. A leak can only push the count up,
+  # which is what this is here to catch.
   gc()
   before <- mdbx:::mdbx_env_open_count_()
 
   for (i in 1:5) {
     env <- mdbx_env_open(env_path(), map_size = test_map_size)
-    expect_identical(mdbx:::mdbx_env_open_count_(), before + 1L)
+    expect_lte(mdbx:::mdbx_env_open_count_(), before + 1L)
     mdbx_env_close(env)
-    expect_identical(mdbx:::mdbx_env_open_count_(), before)
+    expect_lte(mdbx:::mdbx_env_open_count_(), before)
   }
 
   # Including the ones nobody closed, and the ones that never opened.
@@ -260,7 +403,16 @@ test_that("the registry of open paths does not grow", {
   gc()
   gc()
 
-  expect_identical(mdbx:::mdbx_env_open_count_(), before)
+  expect_lte(mdbx:::mdbx_env_open_count_(), before)
+
+  # The invariant the count cannot express on its own, and this one is exact: a
+  # path a closed environment held is free for the next open.
+  path <- env_path()
+  first <- mdbx_env_open(path, map_size = test_map_size)
+  mdbx_env_close(first)
+  second <- mdbx_env_open(path, map_size = test_map_size)
+  expect_true(mdbx_env_is_open(second))
+  mdbx_env_close(second)
 })
 
 test_that("an environment collected without an explicit close frees its path", {
@@ -306,7 +458,7 @@ test_that("an existing directory is not an existing environment", {
   # file.exists() is TRUE for a bare directory, and libmdbx detects the
   # directory layout and creates a database inside it -- so `create = FALSE`
   # used to create one anyway. An environment exists only if mdbx.dat does.
-  dir <- file.path(tempdir(), sprintf("empty-%d", sample.int(1e6, 1)))
+  dir <- tempfile("empty-")
   dir.create(dir)
 
   expect_error(mdbx_env_open(dir, create = FALSE), "create = FALSE", fixed = TRUE)
@@ -320,7 +472,7 @@ test_that("an existing directory is not an existing environment", {
 })
 
 test_that("the layout reported is the one in use, not the one requested", {
-  dir <- file.path(tempdir(), sprintf("layout-%d", sample.int(1e6, 1)))
+  dir <- tempfile("layout-")
   mdbx_env_close(mdbx_env_open(dir, subdir = TRUE))
 
   # Reopened with the default subdir = FALSE, but libmdbx detects the directory

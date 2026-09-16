@@ -219,6 +219,138 @@ test_that("a panic in a transaction operation poisons the environment too", {
   expect_error(mdbx_env_stat(env), "unusable after a libmdbx assertion")
 })
 
+test_that("a poisoned environment keeps its path claimed, closed or not", {
+  # close_handle() deliberately never hands a poisoned environment back to
+  # libmdbx, so the lock file stays held for the life of the process. The
+  # registry entry went away on close all the same, and the next open sailed
+  # past it into libmdbx -- which failed on the lock file with a bare errno
+  # (`mdbx error 35` on macOS), or on a platform whose lock blocks instead of
+  # failing, hung the session. That is precisely what the registry is for.
+  path <- env_path()
+  env <- mdbx_env_open(path, map_size = test_map_size)
+  expect_error(mdbx:::mdbx_test_panic_stat_(env, FALSE), "libmdbx assertion failed")
+
+  # Poisoned but still held: "use the existing handle" would be impossible
+  # advice, since every operation on it refuses.
+  message <- conditionMessage(tryCatch(
+    mdbx_env_open(path, map_size = test_map_size), error = identity
+  ))
+  expect_match(message, "libmdbx assertion failure", fixed = TRUE)
+  expect_false(grepl("use the existing handle", message, fixed = TRUE))
+  expect_false(grepl("mdbx error", message, fixed = TRUE))
+
+  # And after the close that drops the handle entirely, when nothing is left to
+  # find in the registry at all.
+  mdbx_env_close(env)
+  after <- conditionMessage(tryCatch(
+    mdbx_env_open(path, map_size = test_map_size), error = identity
+  ))
+  expect_match(after, "libmdbx assertion failure", fixed = TRUE)
+  expect_false(grepl("mdbx error", after, fixed = TRUE))
+
+  # A different environment is unaffected: it is the path that is claimed, not
+  # the ability to open environments.
+  other <- mdbx_env_open(env_path(), map_size = test_map_size)
+  expect_true(mdbx_env_is_open(other))
+  mdbx_env_close(other)
+})
+
+test_that("a panic raised by the close itself claims the path too", {
+  # The close path recorded a poisoned key only for a handle that arrived
+  # poisoned. A panic raised *by* mdbx_env_close() skipped that branch entirely:
+  # unregister_env() had already given the path up, libmdbx may or may not have
+  # released the file, and nothing was left to say so.
+  path <- env_path()
+  env <- mdbx_env_open(path, map_size = test_map_size)
+
+  # Armed at this environment, not at "the next close": close_call is reached
+  # from finalizers too, so a GC between arming and closing would otherwise hand
+  # the panic to an environment an earlier test abandoned.
+  mdbx:::mdbx_test_arm_close_panic_(env)
+  gc()
+  expect_error(mdbx_env_close(env), "libmdbx assertion failed")
+
+  # The handle is spent either way.
+  expect_false(mdbx_env_is_open(env))
+
+  message <- conditionMessage(tryCatch(
+    mdbx_env_open(path, map_size = test_map_size), error = identity
+  ))
+  expect_match(message, "libmdbx assertion failure", fixed = TRUE)
+  expect_false(grepl("mdbx error", message, fixed = TRUE))
+
+  # Other paths are untouched, so the claim is the path's and not the process's.
+  other <- mdbx_env_open(env_path(), map_size = test_map_size)
+  expect_true(mdbx_env_is_open(other))
+  mdbx_env_close(other)
+})
+
+test_that("an environment abandoned to the collector does not eat an armed panic", {
+  # The regression the arming change prevents: a global flag is consumed by
+  # whichever close runs first, and the suite leaves environments for the
+  # collector by design. Arm at one, collect others, and the armed one must
+  # still be the one that panics.
+  path <- env_path()
+  env <- mdbx_env_open(path, map_size = test_map_size)
+
+  # Abandoned without closing, exactly as local_env() does throughout the suite.
+  invisible(mdbx_env_open(env_path(), map_size = test_map_size))
+  invisible(mdbx_env_open(env_path(), map_size = test_map_size))
+
+  mdbx:::mdbx_test_arm_close_panic_(env)
+  gc()
+  gc()
+
+  expect_error(mdbx_env_close(env), "libmdbx assertion failed")
+})
+
+test_that("an armed close panic is dropped when the close never reaches it", {
+  # panic_close_target is a raw handle pointer, and close_handle() returns
+  # before close_call on three paths -- already closed, inherited across a fork,
+  # and poisoned. Left armed, it outlives the handle the finalizer frees, and
+  # the next env_handle the allocator puts at that address compares equal to it:
+  # an unrelated environment would raise a fabricated panic on close and have
+  # its path claimed for the session.
+  env <- mdbx_env_open(env_path(), map_size = test_map_size)
+  mdbx:::mdbx_test_arm_close_panic_(env)
+
+  # Poison it, so the close takes the branch that returns before close_call.
+  expect_error(mdbx:::mdbx_test_panic_stat_(env, FALSE), "libmdbx assertion failed")
+  mdbx_env_close(env)
+  rm(env)
+  gc()
+  gc()
+
+  # Nothing is armed any more, so ordinary environments close normally.
+  for (i in 1:5) {
+    other <- mdbx_env_open(env_path(), map_size = test_map_size)
+    expect_silent(mdbx_env_close(other))
+    expect_false(mdbx_env_is_open(other))
+  }
+})
+
+test_that("a panic raised by the open claims the path it may have taken", {
+  # Nothing pointed at the half-built environment once the unique_ptr let go of
+  # the handle struct, so if libmdbx had taken the lock file before it panicked
+  # it held it with no handle and no registry entry naming it. The key is not on
+  # the handle at that point either, which is why both spellings are claimed.
+  path <- env_path()
+
+  mdbx:::mdbx_test_arm_open_panic_()
+  expect_error(mdbx_env_open(path, map_size = test_map_size),
+               "libmdbx assertion failed")
+
+  message <- conditionMessage(tryCatch(
+    mdbx_env_open(path, map_size = test_map_size), error = identity
+  ))
+  expect_match(message, "libmdbx assertion failure", fixed = TRUE)
+  expect_false(grepl("mdbx error", message, fixed = TRUE))
+
+  other <- mdbx_env_open(env_path(), map_size = test_map_size)
+  expect_true(mdbx_env_is_open(other))
+  mdbx_env_close(other)
+})
+
 test_that("a panic with a live transaction can still be cleaned up", {
   env <- local_env()
   txn <- mdbx_txn_begin(env)

@@ -55,7 +55,9 @@ tests.
 
 ## Notes for the reviewer
 
-This is a new submission.
+This is a resubmission. In response to CRAN feedback, we added the missing
+`\value` section for `mdbx_scan_max`, documenting the structure of its output
+and what the value means.
 
 The package bundles the amalgamated sources of 'libmdbx' (Apache-2.0) under
 `src/vendor/libmdbx/`, compiled into the package's own shared object. There is

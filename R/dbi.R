@@ -76,7 +76,11 @@ mdbx_dbi_open <- function(txn, name, create = FALSE) {
 
   mdbx_dbi_open_(txn, name, create)
 
-  structure(list(name = name, path = attr(txn, "path")), class = "mdbx_dbi")
+  # `token` is what identifies the environment; `path` is carried only so a
+  # refusal can name it. See db_name().
+  structure(list(name = name, path = attr(txn, "path"),
+                 token = attr(txn, "token")),
+            class = "mdbx_dbi")
 }
 
 #' Empty or delete a named database
@@ -126,6 +130,11 @@ mdbx_dbi_open <- function(txn, name, create = FALSE) {
 #' unlink(c(path, paste0(path, "-lck")))
 mdbx_dbi_drop <- function(txn, db, delete = FALSE) {
   delete <- check_bool(delete, "delete")
+  # The named-database guard and the read-only refusal both live in the native
+  # layer now: see mdbx_dbi_drop_(). The `write` attribute this used to consult
+  # is one R code can rewrite in place, which made the guard switchable off from
+  # the outside -- on a call whose whole purpose is to prevent an irreversible
+  # purge.
   mdbx_dbi_drop_(txn, db_name(db, txn), delete)
   invisible(NULL)
 }
@@ -181,6 +190,13 @@ print.mdbx_dbi <- function(x, ...) {
 # so that using one elsewhere is caught rather than silently addressing a
 # same-named database in another environment.
 #
+# What they carry for that is the environment's `token`, not its path. A path
+# names a place, and an environment can be closed, deleted and another created
+# in the same place -- after which a handle from the first would have gone on
+# reading and writing the same-named database in its replacement, which has
+# nothing to do with it. The token names the open, so the two do not compare
+# equal. The path is kept alongside it only so the refusal can say where.
+#
 # The contents are checked, not just the class. An mdbx_dbi is an ordinary
 # mutable list, so `db$name <- character(0)` is something R code can do -- and
 # character(0) is exactly how the native layer spells "the main database". A
@@ -198,20 +214,52 @@ db_name <- function(db, txn) {
 
   name <- db$name
   path <- db$path
+  token <- db$token
 
-  if (!is_single_string(name) || !is_single_string(path)) {
+  if (!is_single_string(name) || !is_single_string(path) ||
+      !is_single_string(token)) {
     stop(paste0(
-      "`db` is not a valid 'mdbx_dbi' object: its `name` and `path` must each ",
-      "be a single non-empty string. Use mdbx_dbi_open() to obtain one, or ",
-      "NULL for the main database"
+      "`db` is not a valid 'mdbx_dbi' object: its `name`, `path` and `token` ",
+      "must each be a single non-empty string. Use mdbx_dbi_open() to obtain ",
+      "one, or NULL for the main database"
     ), call. = FALSE)
   }
 
-  if (!identical(path, attr(txn, "path"))) {
-    stop(sprintf(
-      "this database handle belongs to the environment at '%s', not '%s'",
-      path, attr(txn, "path")
-    ), call. = FALSE)
+  # A `txn` that is not a transaction is not this function's to complain about.
+  # It gets here because R forces db_name(db, txn) before the native entry point
+  # can check its own argument, and comparing a handle against the attributes of
+  # something that has none produced a message about the database handle for
+  # what is really a bad `txn` -- an empty one, in fact, since sprintf() with a
+  # NULL argument returns character(0) and stop() then raises no text at all.
+  if (!inherits(txn, "mdbx_txn")) {
+    return(name)
+  }
+
+  # Both must match, not the token alone. A token collision is possible across
+  # a fork() -- the counter it is minted from is duplicated -- and either field
+  # alone can be rewritten from R; requiring both means a handle has to agree
+  # with the transaction about *which* open at *which* place, and a record that
+  # fits only one of those is refused. The path decides which message: a
+  # different place is one refusal, the same place under a different open is the
+  # other, and naming one path twice would read as a mistake.
+  same_token <- identical(token, attr(txn, "token"))
+  same_path <- identical(path, attr(txn, "path"))
+  if (!same_token || !same_path) {
+    stop(
+      if (same_path) {
+        sprintf(paste0(
+          "this database handle belongs to an environment at '%s' that has ",
+          "since been closed; the one open there now is a different ",
+          "environment. Open the database again in this transaction"
+        ), path)
+      } else {
+        sprintf(
+          "this database handle belongs to the environment at '%s', not '%s'",
+          path, attr(txn, "path")
+        )
+      },
+      call. = FALSE
+    )
   }
 
   name

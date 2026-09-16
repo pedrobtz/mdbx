@@ -46,7 +46,7 @@ new_mdbx_model <- function() {
     # Environments this process has open, by label. Each records which
     # environment it *denotes*: the generator builds several spellings of one
     # path, so two labels can name the same database. That is the model's own
-    # knowledge, by construction, not a re-derivation of env_key().
+    # knowledge, by construction, not a re-derivation of env_data_file().
     envs = list(),
     committed = list(),
     txn = NULL
@@ -106,8 +106,18 @@ expected_keys <- function(view, db, limit = NULL, start = NULL, reverse = FALSE)
 
   # `start` is inclusive, and positions the cursor at the first key at or after
   # it going forwards, or at or before it going backwards.
+  #
+  # Compared by position in a radix ordering, never with <= or >= on the strings
+  # themselves. Those are collation comparisons -- the very thing sorted_ids()
+  # uses method = "radix" to avoid -- while libmdbx positions the cursor by raw
+  # byte order. Under a collation that orders the hex ids differently the oracle
+  # and the package would disagree about a scan neither got wrong, and under one
+  # that happens to agree it would hide the day they really did.
   if (!is.null(start)) {
-    keep <- if (reverse) ids <= start else ids >= start
+    ordered <- sort(unique(c(ids, start)), method = "radix")
+    at <- match(start, ordered)
+    pos <- match(ids, ordered)
+    keep <- if (reverse) pos <= at else pos >= at
     ids <- ids[keep]
   }
 

@@ -911,6 +911,47 @@ what makes the Stage 8 handle representation safe (see design.md). `env.close(do
 likewise skipped — upstream's own documentation calls it a footgun rather than a latency
 optimisation.
 
+### Safety mechanisms, compared against both reference bindings
+
+Read after *Deliberately not ours*. The feature gap above is about API surface; this is about the
+hazards, and it points the other way — on two of them this package does **more** than the binding
+its packaging follows. Verified by reading the sources, not the docs: `jyj117/mdbx-py` at `279d5ef`
+(2026-08-30) and `r-dbi/RSQLite` at `e61dfae` (2026-09-15).
+
+| Hazard | `clibmdbx` (Python) | RSQLite (R, SQLite) | Here |
+| --- | --- | --- | --- |
+| Same file opened twice in one process | **no guard** — `mdbx_env_open` called directly (`_core.c:905`); no path or identity registry anywhere in the file | not a hazard: SQLite supports many connections per file by design | three-key open registry |
+| libmdbx assertion failure | **no assert hook** — its one `mdbx_setup_debug()` passes `MDBX_DBG_DONTCHANGE` (`_core.c:4083`) and `MDBX_DBG_ASSERT` appears nowhere, so an assert aborts the interpreter | not a hazard: SQLite does not abort the process | assert hook, panic boundary, poisoned handles |
+| Child outliving parent | C-struct `self->env`, explicit `closed` flags | `shared_ptr` refcount; collection order irrelevant (`connection.cpp:40`, `DbResult.h:16`) | R-level retention + `live_txns` + refuse-close |
+| Deferred close for a parent with live children | n/a | **`sqlite3_close_v2()`** — warns and defers (`connection.cpp:54-70`) | none available; libmdbx closes immediately |
+| Handle reached across `fork()` | `MDBX_ENV_CHECKPID=1`, per-object `pid`, `ForkError` (`_core.c:1030`) | **no guard** — the only `getpid` builds savepoint names | pid on every entry point, plus both MDBX checks |
+| Forged or wrong-type external pointer | n/a (Python type system) | **non-null check only** (`connection.cpp:12`) — a wrong-type pointer is type confusion | private tag, checked before every dereference |
+| Authoritative object state | **in the C struct** — not rewritable from Python | in the C++ object | `token`/`path` in an **R list**, rewritable — the one place to copy them and the reason F3 stays open |
+
+Three conclusions worth keeping:
+
+1. **The expensive subsystems here exist because libmdbx lacks what SQLite provides, not because
+   they were over-built.** Every hang found during the reviews traces to the one-open rule, which
+   exists only because libmdbx neither detects a second open nor fails cleanly on it — it returns a
+   bare errno or blocks on its own lock file in the process that holds it. `clibmdbx` does not guard
+   this at all, so there was no implementation to copy.
+2. **The one real miss is where state lives.** Both reference bindings keep authoritative state in
+   native memory, where the scripting language cannot reach it. Putting the `write` flag and the
+   environment token in R-visible attributes is what allowed `attr(txn, "write") <- FALSE` to switch
+   off a guard against irreversible data loss, and what still allows a forged token to cross
+   environments. The fix is the same shape as theirs: move the check below the boundary.
+3. **Mature R bindings are less defensive than this one, which is calibration rather than
+   vindication.** RSQLite has no fork guard, no external-pointer tag check, and relies on SQLite's
+   forgiving API for lifetime. A finding count is partly a function of how strict a contract is being
+   attempted.
+
+Process worth mining from `clibmdbx`, none of it design: `scripts/verify_vendor.py` (digest
+verification as a script, where [vendoring.md](vendoring.md) has prose), `scripts/check_api_coverage.py`
+(mechanical gap detection against the header, which is what the table above is by hand), and
+`tests/test_concurrency_process.py`.
+
+---
+
 ---
 
 ## Open questions, and where they get answered
@@ -1031,6 +1072,16 @@ Upstream:
 - <https://github.com/jyj117/mdbx-py/blob/main/docs/API_COVERAGE.md> — the basis for the feature
   gap recorded above
 - <https://github.com/jyj117/mdbx-py/blob/main/docs/BUILDING.md>
+
+`r-dbi/RSQLite`, the R-side reference for ownership rather than for MDBX — the closest thing to this
+package's problem, being a file-based database bound to R through an external pointer, and the source
+of the refcounting alternative recorded in [design.md](design.md):
+
+- <https://github.com/r-dbi/RSQLite>
+- <https://github.com/r-dbi/RSQLite/blob/main/src/connection.cpp> — `shared_ptr` in the external
+  pointer, and the warn-and-defer release
+- <https://www.sqlite.org/c3ref/close.html> — `sqlite3_close_v2()`, the deferred close libmdbx has no
+  equivalent of
 
 `wtdcode/mdbx-py`, the architecture explicitly rejected — submodule plus CMake producing a
 standalone library loaded by `ctypes`, neither half of which survives `R CMD build`:

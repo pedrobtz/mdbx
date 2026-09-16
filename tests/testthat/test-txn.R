@@ -22,13 +22,68 @@ test_that("state reports usability, not just whether a handle is allocated", {
   txn <- mdbx_txn_begin(env, write = TRUE)
 
   expect_identical(mdbx_txn_state(txn), "active")
-  expect_error(mdbx_put(txn, "k", strrep("v", 4e6)), "MDBX_MAP_FULL")
+
+  # Matched on the condition class, not on the status name. Which status a write
+  # too big for the map earns is libmdbx's business and varies with the page
+  # size the platform gives it -- MDBX_MAP_FULL here, but the same geometry
+  # rounds differently elsewhere, and this package's own rule is that
+  # page-size-dependent limits must not be asserted literally. What is being
+  # tested is the state the failure leaves behind, which does not vary.
+  expect_error(mdbx_put(txn, "k", strrep("v", 4e6)), class = "mdbx_error")
 
   expect_identical(mdbx_txn_state(txn), "failed")
-  expect_error(mdbx_get(txn, "k"), "MDBX_BAD_TXN")
+  expect_error(mdbx_get(txn, "k"), class = "mdbx_error")
 
   mdbx_txn_abort(txn)
   expect_identical(mdbx_txn_state(txn), "aborted")
+  mdbx_env_close(env)
+})
+
+test_that("an environment query reports a failed transaction rather than hiding it", {
+  # An environment-level query reuses whatever transaction this thread holds,
+  # because passing null makes libmdbx start an internal read that collides with
+  # a reader slot already taken. So while a failed transaction is open, a query
+  # through it reports that failure -- and that is the honest answer rather than
+  # a gap to paper over.
+  #
+  # Skipping the errored transaction was tried and reverted: passing null does
+  # not reach the committed snapshot the way it looks like it should.
+  # mdbx_env_stat_ex() calls env_owned_wrtxn() and picks the same errored
+  # transaction back up while mdbx_env_info_ex() reads the head meta page, so
+  # the two diverge further than they did before -- and stat's answer then rests
+  # on an internal libmdbx shortcut a version bump could remove.
+  env <- mdbx_env_open(env_path(), map_size = 1024^2)
+  txn <- mdbx_txn_begin(env, write = TRUE)
+
+  expect_error(mdbx_put(txn, "k", strrep("v", 4e6)), class = "mdbx_error")
+  expect_identical(mdbx_txn_state(txn), "failed")
+
+  expect_error(mdbx_env_stat(env), class = "mdbx_error")
+
+  # Aborting it is what restores the environment-level query.
+  mdbx_txn_abort(txn)
+  expect_type(mdbx_env_stat(env), "list")
+  expect_type(mdbx_env_info(env), "list")
+
+  mdbx_env_close(env)
+})
+
+test_that("an environment query reuses a live read transaction", {
+  # Passing a null transaction makes libmdbx start an internal read of its own,
+  # which collides with the reader slot this thread already holds and fails with
+  # MDBX_BAD_RSLOT. Skipping an errored transaction must therefore never apply
+  # to a read one -- nothing a read does sets MDBX_TXN_ERROR, so the skip is
+  # limited to writes and this stays the case it always was.
+  env <- mdbx_env_open(env_path(), map_size = test_map_size)
+  mdbx_with_write(env, function(txn) mdbx_put(txn, "k", "v"))
+
+  txn <- mdbx_txn_begin(env, write = FALSE)
+  expect_identical(mdbx_txn_state(txn), "active")
+
+  expect_type(mdbx_env_stat(env), "list")
+  expect_type(mdbx_env_info(env), "list")
+
+  mdbx_txn_abort(txn)
   mdbx_env_close(env)
 })
 

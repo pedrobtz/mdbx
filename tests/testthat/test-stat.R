@@ -176,3 +176,28 @@ test_that("the built-in methods refuse arguments they do not take", {
   expect_type(mdbx_env_info(env), "list")
   mdbx_env_close(env)
 })
+test_that("the unsupported-argument refusal covers its own parameter names", {
+  # check_dots_empty() used to take `call_name` through its own `...`, and
+  # arguments forwarded through `...` are matched against the callee's formals
+  # -- so a user writing call_name = bound to it alongside the label the method
+  # passed, and R raised "matched by multiple actual arguments" instead of the
+  # refusal. Partial matching reached it under shorter spellings too.
+  env <- local_env()
+
+  # `x` is not among them: it is the generic's own first argument, and a real
+  # parameter of the public API rather than an implementation detail leaking.
+  for (name in c("call_name", "call_nam", "dots")) {
+    args <- list(env, 1)
+    names(args) <- c("", name)
+
+    expect_error(do.call(mdbx_env_stat, args), sprintf("does not take `%s`", name),
+                 fixed = TRUE)
+    expect_error(do.call(mdbx_env_info, args), sprintf("does not take `%s`", name),
+                 fixed = TRUE)
+  }
+
+  mdbx_with_read(env, function(txn) {
+    expect_error(mdbx_env_stat(txn, call_name = "x"), "does not take `call_name`",
+                 fixed = TRUE)
+  })
+})

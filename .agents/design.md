@@ -49,6 +49,60 @@ The transaction stays explicit. It is what buys atomicity across operations, a c
 snapshot, and throughput — measured at 1000 keys, one transaction versus one per operation: 0.026 s
 against 0.893 s for writes (34x), 0.006 s against 0.011 s for reads.
 
+### Ownership and lifetime — **settled in Stage 3; the alternative recorded after the reviews**
+
+**The child external pointer retains its parent through the protected field, the environment keeps a
+registry of its live transactions, and an explicit close is refused while that registry is
+non-empty.** Finalizers detach rather than close.
+
+Why it has to be enforced rather than inferred: `mdbx_env_close_ex()` documents that using a
+transaction after its environment closes is undefined behaviour that "would cause a SIGSEGV", and R
+makes no promise about the order in which it runs two finalizers. When an environment and its
+transaction become garbage in the same cycle, the environment's finalizer may run first. So the
+ordering is this package's problem, and `live_txns` is what makes the bad order unreachable.
+
+#### The alternative: C++ refcounting, as RSQLite does it
+
+RSQLite (`r-dbi/RSQLite` at `e61dfae`) solves the same problem a different way, and it is worth
+recording because it is the strongest alternative and it was not considered at the time.
+
+Its `EXTPTRSXP` holds a **`shared_ptr` to** the connection rather than the connection itself
+(`src/connection.cpp:40`), and every result object holds its own copy of that `shared_ptr`
+(`src/DbResult.h:16`). The last reference to go destroys the connection, so **R's collection order
+cannot matter**: there is no parent-retention field, no child registry, and no detach step anywhere
+in the package.
+
+Adopted here, that would delete `detach_txns()`, the nulled `owner` back-reference, and the reasoning
+about which finalizer ran first. That reasoning is not free — three regressions during the review
+rounds lived in exactly it: a `detach_txns()` that ran before the pid check and left a forked child's
+transactions silently finished, a raw test-hook pointer that outlived the handle it named, and a
+`handle.release()` that preceded `register_env()` so a throw in between leaked an open environment
+into no registry at all.
+
+It is **not** adopted, for one reason that is about the API and one that is about this package's
+stance:
+
+- RSQLite can afford to be permissive because **SQLite hands it a deferred close**.
+  `sqlite3_close_v2()` turns a connection with live statements into a zombie and deallocates it when
+  the last one finalizes, so `connection_release()` merely warns — *"There are N result in use. The
+  connection will be released when they are closed"* — and closes anyway
+  (`src/connection.cpp:54-70`). **libmdbx has no `close_v2`.** Its close is immediate, and what
+  follows is a segfault rather than a warning.
+- Refcounting would therefore have to defer the close itself, which changes what
+  `mdbx_env_close()` *means*: from "refuse, because you still hold a transaction" to "drop my
+  reference; the environment closes whenever the last transaction is collected". That is friendlier
+  and it hides the bug. This package refuses a second open, refuses deleting the main database, and
+  refuses emptying it while named databases exist; refusing here is the same judgement. A caller who
+  has lost track of a transaction is better told so than accommodated.
+
+  It would also put the open registry on a timer. The registry has to know when a path is free, and
+  under refcounting that moment arrives whenever the collector gets round to the last transaction.
+
+What the alternative is still good for is **defence in depth**: refcounting underneath the existing
+rules would make a mistake in the ordering logic harmless instead of fatal, without changing what
+any entry point promises. If the ownership code is ever reworked, that is the shape to rework it
+into — not as a replacement for the refusals, but as the floor beneath them.
+
 ### On-disk layout
 
 `mdbx_env_open()` takes `subdir`, defaulting to `FALSE`, which passes `MDBX_NOSUBDIR`: the path is
@@ -156,6 +210,121 @@ use-after-close bugs is unreachable: handles are released when the environment c
 
 The cost is that a DBI slot stays used until the environment closes, bounded by `max_dbs` — which
 is already an `mdbx_env_open()` argument, and until now had nothing to spend itself on.
+
+### Identifying an environment — **settled in the package review**
+
+**By its data file's identity — `(device, inode)` on POSIX, `(volume, file index)` on Windows —
+not by any spelling of its path.**
+
+An environment may be open at most once per process (see *The concurrency contract*), and the
+registry that enforces that is keyed by this. The key matters more than it looks: a second open of
+one environment does not fail, it *hangs*. libmdbx coordinates through a lock file named after the
+path, so a second name for one data file gets a second lock file, and then blocks on a lock this
+same single-threaded process is the one holding and can never reach the call that would release.
+
+Canonicalising the path was the first answer and is not sufficient. `normalizePath()` resolves
+`.`, `..` and symlinks, but a hard link is not a spelling of another path — it is an equal name for
+one inode, and no string transformation relates the two. Keying by identity subsumes symlink
+resolution for free, and costs one `stat()` per open.
+
+Identity alone is not enough, though, and the first attempt at this used it alone and reintroduced
+the very hang it was meant to prevent. Identity is not stable against the file going away: unlink an
+open environment's data file and `stat()` can no longer answer for that path, so an open aimed at it
+misses an incumbent keyed by identity and reaches libmdbx — which still holds the lock file *named
+after the path* and blocks on it forever in this same single-threaded process.
+
+So an environment carries **three** keys, and a match on any is a match: the data file's identity,
+the **lock file's** identity, and the canonical spelling.
+
+The lock file's identity is there because the path key is not enough either. It carries the basename
+as typed, and on a case-insensitive or normalisation-insensitive filesystem — APFS, the macOS
+default, and NTFS — `Foo.mdbx` and `foo.mdbx` are one file, one lock file, and two different path
+keys. While the data file exists its identity bridges them; once it is unlinked, nothing did, and the
+open reached libmdbx and blocked. The second attempt at this keying reintroduced the hang that way.
+The lock file is the resource that actually collides, and it is still on disk for as long as the
+environment is open, so `stat()`ing the incoming spelling's lock file lands on the incumbent's inode
+however the name was cased or normalised. Its name is derived from libmdbx's own constants: `-lck`
+appended in the single-file layout, `mdbx.lck` beside `mdbx.dat` in the directory layout.
+
+The path key remains for the last case, a lock file that is itself gone, where refusing is the
+conservative answer. It also covers a filesystem that keeps no file index at all (FAT and exFAT do
+not, nor do some network redirectors), where identity would otherwise come back all zeros and
+collapse every file on the volume onto one key.
+
+Identity is also not knowable before the file exists, which `create = TRUE` routinely means, so the
+keys are computed before the open — every way out of `mdbx_env_open_()` needs them, including the
+cleanup close — and the identity is recomputed once the open has created the file.
+
+`R/env.R`'s `env_data_file()` settles only *which file* a path names — the `mdbx.dat` inside a
+directory-layout environment, or the path itself — and `env_keys_for()` in `src/r_mdbx.cpp` turns
+that into the pair.
+
+### Recognising an environment across its own replacement — **settled in the package review**
+
+**An opaque per-open token, carried on the environment, copied to its transactions, and recorded
+in every `mdbx_dbi`.**
+
+Because a database handle is a name re-resolved per transaction (above), something has to stop one
+being used against an environment it did not come from — otherwise it silently addresses a
+same-named database somewhere else. The path was the first answer, and it is wrong in one case: an
+environment can be closed, its files deleted, and another created at the same path. The handle
+then matched, and went on reading and writing in a replacement it has nothing to do with.
+
+A path names a place; the token names an *open*. It is a counter with the process id folded in.
+The counter alone was the first answer and was wrong on one axis: `fork()` duplicates it, so a
+child's next open and the parent's next open minted the same number — and a handle record *can*
+cross back from a forked worker, as an ordinary list returned through `mccollect()`. It then matched
+an unrelated environment in the parent, which is the wrong-database access the token exists to
+refuse. Within one process the counter is unique; across the fork, the pid is.
+
+A handle must match on **both** token and path, not the token alone. Either field can be rewritten
+from R, and requiring both means a record has to agree with the transaction about *which open* at
+*which place*; forging one of the two is not enough. (Forging both still passes — the binding is
+enforced in R, against R-writable fields, and closing that needs the token plumbed natively through
+every `db=` entry point. That is a separate change, recorded as open.) The path decides which
+refusal is given: a different place is one message, the same place under a different open is the
+other, and naming one path twice would read as a mistake.
+
+### A panicked environment's path — **settled in the code review**
+
+**Claimed for the life of the process, whether or not the handle is closed.**
+
+When libmdbx panics, `close_handle()` deliberately never hands the environment back to it: closing a
+handle whose invariants libmdbx has already rejected is how a bad situation becomes a crash. The
+consequence is that nothing ever releases the lock file, the reader slot or the descriptors, so the
+path is unopenable until the process exits — and the registry has to say so rather than let a later
+open discover it from libmdbx.
+
+The registry keyed open environments by live handle, and a poisoned handle being closed removed its
+entry. The next open then passed the registry and reached libmdbx, which failed on the lock file
+with a bare `mdbx error 35` on macOS — or, on a platform whose lock blocks instead of failing, hung
+the session. That is the exact failure the registry exists to prevent.
+
+The key is therefore retained in a separate list of strings, which outlives the handle the finalizer
+frees. A poisoned environment that is still held is refused too, and for the same reason, with a
+message that says so: the ordinary "use the existing handle, or close it" advice is impossible on
+both halves, since every operation on such a handle refuses and closing it frees nothing.
+
+### Emptying the main database — **settled in the code review**
+
+**Refused while any named database exists.**
+
+A named database *is* a record in the main one, and `mdbx_drop()` on `MAIN_DBI` purges the whole main
+tree — so emptying the main database destroys every named database in the environment. Nothing in
+"removes every record but keeps the database" prepares a caller for that.
+
+It also cannot be made consistent afterwards. The transaction's cached handles go on answering from
+trees libmdbx has already purged, so within one transaction `mdbx_dbi_list()` reports nothing while a
+handle opened moments earlier still returns rows. libmdbx keeps its own environment-level record of
+the name besides, so after the commit `mdbx_dbi_open()` still succeeds for a database that no longer
+exists and the read through it fails with a raw `MDBX_BAD_DBI`. Repairing that would need
+`mdbx_dbi_close()` — the one call this package refuses to make, for the reasons under *Database
+handles*.
+
+So the operation is refused while there is anything to lose, and stays available once there is not:
+emptying the main database of an environment with no named databases is exactly as safe as it sounds.
+Dropping the named databases by name first, or deleting the main database's keys individually, are
+the two ways to ask for what the refusal declines to guess at.
 
 ### Environment resizing
 

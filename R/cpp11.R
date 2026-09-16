@@ -24,8 +24,8 @@ mdbx_version_ <- function() {
   .Call(`_mdbx_mdbx_version_`)
 }
 
-mdbx_env_open_ <- function(path, key, readonly, subdir, max_dbs, map_size, max_readers, mode, extra_flags) {
-  .Call(`_mdbx_mdbx_env_open_`, path, key, readonly, subdir, max_dbs, map_size, max_readers, mode, extra_flags)
+mdbx_env_open_ <- function(path, spelling, readonly, subdir, max_dbs, map_size, max_readers, mode, extra_flags) {
+  .Call(`_mdbx_mdbx_env_open_`, path, spelling, readonly, subdir, max_dbs, map_size, max_readers, mode, extra_flags)
 }
 
 mdbx_env_close_ <- function(env) {
@@ -154,6 +154,14 @@ mdbx_thread_mismatch_code_ <- function() {
 
 mdbx_test_panic_stat_ <- function(env, info) {
   invisible(.Call(`_mdbx_mdbx_test_panic_stat_`, env, info))
+}
+
+mdbx_test_arm_open_panic_ <- function() {
+  invisible(.Call(`_mdbx_mdbx_test_arm_open_panic_`))
+}
+
+mdbx_test_arm_close_panic_ <- function(env) {
+  invisible(.Call(`_mdbx_mdbx_test_arm_close_panic_`, env))
 }
 
 mdbx_test_panic_get_ <- function(txn) {
