@@ -61,7 +61,7 @@ slots cost nothing, and the default of 16 suits most uses.
 path <- file.path(tempdir(), "runs.mdbx")
 env <- mdbx_env_open(path, max_dbs = 4)
 env
-#> <mdbx_env> /tmp/RtmpYUcAqB/runs.mdbx 
+#> <mdbx_env> /tmp/RtmpmrohJZ/runs.mdbx 
 #>   access: read-write 
 #>   layout: single file 
 #>   status: open

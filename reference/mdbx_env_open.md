@@ -143,7 +143,7 @@ path <- tempfile(fileext = ".mdbx")
 
 env <- mdbx_env_open(path)
 env
-#> <mdbx_env> /tmp/RtmpBQn8oR/file19737b9c6822.mdbx 
+#> <mdbx_env> /tmp/Rtmpn90qqr/file19791791ecd.mdbx 
 #>   access: read-write 
 #>   layout: single file 
 #>   status: open 
