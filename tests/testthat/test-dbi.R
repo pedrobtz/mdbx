@@ -422,18 +422,13 @@ test_that("the main database can be emptied but not deleted", {
     expect_error(mdbx_dbi_drop(txn, NULL, delete = TRUE), "cannot be deleted")
   })
 
-  # Refused before anything was emptied, so the refusal cost nothing.
-  mdbx_with_read(env, function(txn) {
-    expect_identical(mdbx_get(txn, "k"), "v")
-    expect_identical(mdbx_dbi_list(txn), "named")
-  })
-
-  # Emptying is refused too while a named database would go with it. libmdbx
+  # Emptying is refused too while a named database would go with it: libmdbx
   # purges the whole main tree, and the named databases *are* records in it.
   mdbx_with_write(env, function(txn) {
     expect_error(mdbx_dbi_drop(txn, NULL), "would also destroy the named databases")
   })
 
+  # Both refusals happened before anything was emptied, so they cost nothing.
   mdbx_with_read(env, function(txn) {
     expect_identical(mdbx_get(txn, "k"), "v")
     expect_identical(mdbx_dbi_list(txn), "named")

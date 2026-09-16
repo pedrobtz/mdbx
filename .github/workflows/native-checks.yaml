@@ -4,10 +4,33 @@
 # Four of the five are called as-is. Sanitizers are run from a local job instead
 # because this package needs one flag the reusable workflow does not take: see
 # the comment on CFLAGS below.
+#
+# paths-ignore skips the whole workflow for prose-only changes. These jobs
+# compile the package and run the suite, so nothing they can observe lives in
+# a .md file, a pkgdown article or .agents/. GitHub applies it only when every
+# changed file matches, so a commit touching both a vignette and src/ still
+# runs. man/ is deliberately absent: R CMD check executes the examples in it,
+# and valgrind is what runs them under instrumentation. R-CMD-check.yaml is
+# also left alone -- README.md ships in the tarball and --as-cran checks the
+# URLs in it, which is a real check on a prose-only change.
+#
+# YAML anchors would express this once; GitHub Actions does not support them.
 on:
   push:
     branches: [main, master]
+    paths-ignore:
+      - '**.md'
+      - 'vignettes/**'
+      - '_pkgdown.yml'
+      - '.agents/**'
+      - 'docs/**'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'vignettes/**'
+      - '_pkgdown.yml'
+      - '.agents/**'
+      - 'docs/**'
 
 name: native-checks
 
@@ -111,33 +134,44 @@ jobs:
             devtools::test(shuffle = TRUE, stop_on_failure = TRUE)
           }
 
-  # Pinned to a branch of r-actions (PR pedrobtz/r-actions#8) rather than @v1
-  # until that lands and v1 moves. CI-only; nothing shipped changes.
-  #
   # --leak-check=full because R's own --use-valgrind does not set it, so a
-  # "definitely lost" total arrives with no stack and cannot be attributed.
+  # "definitely lost" total arrives with no stack and cannot be attributed
+  # from the artifact. Not --track-origins: it answers where an uninitialised
+  # value came from, which was worth having while the page-padding findings
+  # were being identified and is dead weight now that they are suppressed --
+  # it took the job from 6 minutes to 15. Turning leak-check on also makes
+  # every leak record an error,
+  # and the default errors-for-leak-kinds counts "possibly lost" among them --
+  # which here is libmdbx holding interior pointers into its own allocations,
+  # not a leak, and is reported without a stack because it is not shown. So
+  # the two kinds that are shown are the two that count.
   #
   # The suppression file covers exactly two established-benign classes, both
   # with their stacks recorded in tools/valgrind.supp: libmdbx writing page
   # padding it never initialised, and the MDBX_env/MDBX_txn this package
   # deliberately abandons after a libmdbx panic instead of re-entering a
-  # library that has rejected its own invariants.
-  #
-  # -DENABLE_MEMCHECK was tried here and reverted. It is libmdbx's switch for
-  # finding bugs *inside libmdbx*, not for annotating its padding away: it
-  # raised the uninitialised-value contexts from 2 to 13, and it shrinks the
-  # default geometry enough to fail the reservation test in test-env.R.
+  # library that has rejected its own invariants. tools/ is in .Rbuildignore,
+  # so none of this reaches the tarball.
   valgrind:
-    uses: pedrobtz/r-actions/.github/workflows/valgrind.yml@6857cc37109b39743c492181d76e4600195cd743
+    uses: pedrobtz/r-actions/.github/workflows/valgrind.yml@v1
     with:
-      valgrind-opts: "--leak-check=full --track-origins=yes --show-leak-kinds=definite,indirect"
+      valgrind-opts: >-
+        --leak-check=full
+        --show-leak-kinds=definite,indirect --errors-for-leak-kinds=definite,indirect
       suppressions: "tools/valgrind.supp"
 
   lto:
     uses: pedrobtz/r-actions/.github/workflows/lto.yml@v1
 
+  # step 100 rather than the default 20: cost scales as roughly 1/step, and at
+  # 20 this suite took 49 to 61 minutes. Every path still runs and the suite
+  # still forces many thousands of collections -- what a larger step gives up
+  # is the odds that one lands while a given unprotected SEXP is live. rchk
+  # covers the same class statically, on every push, in a minute.
   gctorture:
     uses: pedrobtz/r-actions/.github/workflows/gctorture.yml@v1
+    with:
+      step: 100
 
   rchk:
     uses: pedrobtz/r-actions/.github/workflows/rchk.yml@v1

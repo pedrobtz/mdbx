@@ -2,30 +2,45 @@
 # tools/ is in .Rbuildignore, so this never reaches the tarball, and nothing
 # about the shipped build changes because of it.
 #
-# Two classes of finding are suppressed, both established from real stacks in
-# the run for dc48c1f (artifact valgrind-check, tests/testthat.Rout.fail).
-# Everything else still fails the leg.
-#
 # Read this before adding an entry: a suppression is a promise that a finding
-# is understood, not a way to quiet one that is not.
+# is understood, not a way to quiet one that is not. Every entry below was
+# written against a real stack from a CI artifact, and the comment says which
+# behaviour produced it.
+#
+# Two classes are covered. Everything else still fails the leg.
+#
+# Why this file exists at all, rather than -DENABLE_MEMCHECK: that is libmdbx's
+# switch for finding bugs *inside* libmdbx, not for annotating its page padding
+# away. It was tried and reverted -- it raised the uninitialised-value contexts
+# from 2 to 13, and it shrinks the default geometry enough to fail the
+# reservation test in test-env.R.
 
 # ---------------------------------------------------------------------------
 # 1. libmdbx writes whole pages, including padding it never initialised.
 #
 # A page is the unit of I/O, and the bytes past the end of the data in it are
 # written as they are. That is libmdbx's design, not a defect, and it predates
-# this package -- the frames below are entirely vendored. It was reported as
-# two contexts on every commit of this branch.
+# this package -- every frame between the syscall and mdbx_txn_commit_ex is
+# vendored. Reported as three contexts: the writev vector has one entry per
+# run of contiguous dirty pages, so the index varies with the commit.
 #
 # Anchored on mdbx_txn_commit_ex so that only the commit path is covered; the
 # `...` absorbs the inlined osal_pwrite/osal_ioring_write/iov_write/txn_write
 # frames, whose names valgrind resolves inconsistently under -O2.
 #
 # NOT an attempt to hide a real uninitialised-memory bug in this package: no
-# frame of ours appears in either stack, and any finding that reaches a
+# frame of ours appears in any of the stacks, and any finding that reaches a
 # pwrite from anywhere other than a commit is still reported.
 {
-   libmdbx: page padding written by txn_commit (pwritev)
+   libmdbx: page padding written by txn_commit (pwritev vector[0])
+   Memcheck:Param
+   pwritev(vector[0])
+   ...
+   fun:mdbx_txn_commit_ex
+   ...
+}
+{
+   libmdbx: page padding written by txn_commit (pwritev vector[1])
    Memcheck:Param
    pwritev(vector[1])
    ...
@@ -45,16 +60,21 @@
 # 2. An environment or transaction deliberately abandoned after a panic.
 #
 # When libmdbx raises an assertion failure, this package never hands the handle
-# back to it: close_handle() clears the pointer and returns without calling
+# back to it: the close path clears the pointer and returns without calling
 # mdbx_env_close(), because re-entering a library that has just rejected its
-# own invariants is how a bad situation becomes a crash. The memory is given up
-# on purpose and the process keeps it until it exits. CLAUDE.md states the
-# rule; the code has behaved this way since before the current branch.
+# own invariants is how a bad situation becomes a crash. See the comment at
+# src/r_mdbx.cpp:687. The memory is given up on purpose and the process keeps
+# it until it exits.
 #
-# It became visible here only because tests added on this branch explicitly
-# close a poisoned environment, which drops the last pointer to the MDBX_env
-# and moves it from "still reachable" to "definitely lost". The behaviour did
-# not change; its accounting did.
+# It is visible as a leak only because the panic tests close a poisoned
+# environment, which drops the last pointer to the MDBX_env and moves it from
+# "still reachable" to "definitely lost". The behaviour did not change; its
+# accounting did.
+#
+# `fun:*alloc` rather than a named allocator: libmdbx reaches these paths
+# through malloc, calloc, realloc and aligned_alloc, and pinning one of them
+# suppressed 60 blocks while leaving 7 reported. The anchor is what bounds the
+# entry, not the allocator.
 #
 # Honest limit, worth knowing before trusting these: the allocation stack of a
 # deliberately abandoned environment is identical to that of one leaked by a
@@ -68,7 +88,7 @@
    mdbx: MDBX_env abandoned after a libmdbx panic (create)
    Memcheck:Leak
    match-leak-kinds: definite,indirect
-   fun:calloc
+   fun:*alloc
    ...
    fun:mdbx_env_create
    ...
@@ -77,7 +97,7 @@
    mdbx: MDBX_env internals abandoned after a libmdbx panic (open)
    Memcheck:Leak
    match-leak-kinds: definite,indirect
-   fun:calloc
+   fun:*alloc
    ...
    fun:mdbx_env_open
    ...
@@ -86,7 +106,7 @@
    mdbx: MDBX_txn abandoned after a libmdbx panic (begin)
    Memcheck:Leak
    match-leak-kinds: definite,indirect
-   fun:calloc
+   fun:*alloc
    ...
    fun:mdbx_txn_begin_ex
    ...

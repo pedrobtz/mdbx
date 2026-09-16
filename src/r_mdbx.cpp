@@ -2302,11 +2302,11 @@ struct count_context {
   int rc;
 };
 
-// Stops at the first one. Only whether any exist decides the refusal, and
-// counting them all walks every record of the main database -- which on a main
-// database holding millions of keys is a full tree scan paid by the common
-// case, to learn there is nothing to refuse. A non-zero return ends the
-// enumeration, and mdbx_enumerate_tables() hands that value back.
+// Stops at the first one. Only whether any exist decides the refusal below, and
+// counting them all walks every record of the main database -- a full tree scan
+// paid by the common case to learn there is nothing to refuse. A non-zero
+// return ends the enumeration and is handed back by mdbx_enumerate_tables(),
+// which the header documents.
 int count_visit(void *ctx, const MDBX_txn *, const MDBX_val *,
                 MDBX_db_flags_t, const struct MDBX_stat *,
                 MDBX_dbi) MDBX_CXX17_NOEXCEPT {
@@ -2346,18 +2346,22 @@ void mdbx_dbi_drop_(cpp11::sexp txn, cpp11::strings db, bool del) {
 
   // Emptying the main database destroys every named database with it: a named
   // database *is* a record in the main tree, and mdbx_drop() purges the whole
-  // tree. It cannot be made consistent afterwards either -- this transaction's
-  // cached handles go on answering from purged trees, and libmdbx keeps its own
-  // environment-level record of the name, so after the commit mdbx_dbi_open()
-  // still succeeds for a database whose reads then fail with MDBX_BAD_DBI.
-  // Repairing that would need mdbx_dbi_close(), which this package does not
-  // call. So refuse while there is anything to lose.
+  // tree. Nothing about "removes every record but keeps the database" prepares
+  // a caller for that, and it cannot be made consistent afterwards -- this
+  // transaction's cached handles go on answering from purged trees, and libmdbx
+  // keeps its own environment-level record of the name, so after the commit
+  // mdbx_dbi_open() still succeeds for a database whose reads then fail with
+  // MDBX_BAD_DBI. Repairing that would need mdbx_dbi_close(), which this
+  // package does not call. So refuse while there is anything to lose; emptying
+  // the main database of an environment with no named databases is exactly as
+  // safe as it sounds, and stays allowed.
   //
-  // Checked here rather than in R, and after writable_txn() rather than before
-  // it. In R the only available answer to "is this a write transaction" was the
+  // After writable_txn(), so that a read transaction is told it cannot write
+  // rather than told about databases it would have destroyed. And in C rather
+  // than in R: the only answer R had to "is this a write transaction" was the
   // `write` attribute on the external pointer, which R code can rewrite in
-  // place -- so the guard could be switched off with `attr(txn, "write") <-
-  // FALSE` and the purge went through. handle->write is the transaction's own.
+  // place, so `attr(txn, "write") <- FALSE` switched the guard off and the
+  // purge went through. handle->write is the transaction's own.
   if (!del && db.size() == 0 && count_named_tables(handle) > 0)
     cpp11::stop("emptying the main database would also destroy the named "
                 "databases in this environment, because each one is a record "
@@ -2367,10 +2371,10 @@ void mdbx_dbi_drop_(cpp11::sexp txn, cpp11::strings db, bool del) {
   // The main database cannot be deleted -- it is where the named ones are
   // recorded, so an environment without it is not an environment. libmdbx does
   // not say so: mdbx_drop() empties the table, then returns success without
-  // ever looking at `del` for a core DBI. The caller would be told that the
+  // ever looking at `del` for a core DBI, so the caller would be told that the
   // deletion they asked for had happened. Refuse before anything is emptied, so
-  // that the refusal costs them nothing and `delete = FALSE` remains the way to
-  // ask for what libmdbx would have done.
+  // the refusal costs them nothing and `delete = FALSE` remains the way to ask
+  // for what libmdbx would have done.
   if (del && db.size() == 0)
     cpp11::stop("the main database cannot be deleted, only emptied: it is what "
                 "records the named databases. Use delete = FALSE to empty it");
