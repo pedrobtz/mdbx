@@ -4,10 +4,33 @@
 # Four of the five are called as-is. Sanitizers are run from a local job instead
 # because this package needs one flag the reusable workflow does not take: see
 # the comment on CFLAGS below.
+#
+# paths-ignore skips the whole workflow for prose-only changes. These jobs
+# compile the package and run the suite, so nothing they can observe lives in
+# a .md file, a pkgdown article or .agents/. GitHub applies it only when every
+# changed file matches, so a commit touching both a vignette and src/ still
+# runs. man/ is deliberately absent: R CMD check executes the examples in it,
+# and valgrind is what runs them under instrumentation. R-CMD-check.yaml is
+# also left alone -- README.md ships in the tarball and --as-cran checks the
+# URLs in it, which is a real check on a prose-only change.
+#
+# YAML anchors would express this once; GitHub Actions does not support them.
 on:
   push:
     branches: [main, master]
+    paths-ignore:
+      - '**.md'
+      - 'vignettes/**'
+      - '_pkgdown.yml'
+      - '.agents/**'
+      - 'docs/**'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'vignettes/**'
+      - '_pkgdown.yml'
+      - '.agents/**'
+      - 'docs/**'
 
 name: native-checks
 
