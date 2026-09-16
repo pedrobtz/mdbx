@@ -1,0 +1,71 @@
+Subject: Guard bool/true/false/nullptr macros against C23
+
+C23 promotes `bool`, `true`, `false` and `nullptr` from library macros to
+keywords. libmdbx still defines all four for the C build, guarded only by
+`#ifndef bool` / `!defined(nullptr)` -- which stay true in C23, because a
+keyword is not a macro. clang then reports
+
+    mdbx.h:417:9: warning: keyword is hidden by macro definition [-Wkeyword-macro]
+    mdbx.h:420:9: ...
+    mdbx.h:423:9: ...
+    mdbx-internals.h:361:9: ...
+
+which `R CMD check` classifies as significant warnings. CRAN's Debian clang
+leg compiles as C23 (clang defaults to gnu23 from clang 23), so this is a
+WARNING on an incoming submission; it does not fire under gcc, which has no
+such diagnostic, nor in C17 mode.
+
+Add the missing standard-version clause to each guard, so the macros are
+defined exactly where they are still needed and omitted where the compiler
+already supplies the keyword. Every definition matched the C23 semantics it
+now defers to (`_Bool`, 1, 0, a null pointer constant), so no generated code
+changes. Verified: `clang -S -O2` of mdbx.c against the patched and unpatched
+headers is byte-identical under both -std=gnu17 (where the macros survive) and
+-std=gnu23 (where they are now dropped in favour of the keywords), modulo the
+`__TIME__` stamp libmdbx embeds in its build string.
+
+Rejected alternative: `-Wno-keyword-macro` in PKG_CFLAGS. Writing R Extensions
+treats -Wno-* as non-portable, and it would trade this WARNING for a "checking
+compilation flags used" one -- the same trade rejected in patch 4.
+
+Rejected alternative: `SystemRequirements: C17`, which pins the whole package
+back to a standard CRAN is actively moving off, to avoid a diagnostic about
+four lines.
+
+Not yet upstream: libmdbx master carries the same code at the same lines as of
+v0.14.3. Worth sending, and worth re-checking on the next version bump.
+
+--- a/src/vendor/libmdbx/mdbx.h
++++ b/src/vendor/libmdbx/mdbx.h
+@@ -412,7 +412,8 @@
+ 
+ /*----------------------------------------------------------------------------*/
+ 
+-#ifndef __cplusplus
++/* R package patch: C23 makes bool/true/false keywords. See tools/patches. */
++#if !defined(__cplusplus) && (!defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L)
+ #ifndef bool
+ #define bool _Bool
+ #endif
+@@ -422,7 +423,7 @@
+ #ifndef false
+ #define false (0)
+ #endif
+-#endif /* bool without __cplusplus */
++#endif /* bool without __cplusplus, before C23 */
+ 
+ /** Workaround for old compilers without support for C++17 `noexcept`. */
+ #if defined(DOXYGEN)
+--- a/src/vendor/libmdbx/mdbx-internals.h
++++ b/src/vendor/libmdbx/mdbx-internals.h
+@@ -357,7 +357,9 @@
+ #endif
+ #endif /* __extern_C */
+ 
+-#if !defined(nullptr) && (!defined(__cplusplus) || (__cplusplus < 201103L && !defined(_MSC_VER)))
++/* R package patch: C23 makes nullptr a keyword. See tools/patches. */
++#if !defined(nullptr) && (!defined(__cplusplus) || (__cplusplus < 201103L && !defined(_MSC_VER))) &&                    \
++    (defined(__cplusplus) || !defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L)
+ #define nullptr NULL
+ #endif
+ 

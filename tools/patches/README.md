@@ -13,14 +13,15 @@ re-vendors upstream and replays the series.
 | `0002-log-via-R-console.patch` | `debug_log_va()` writes through `REprintf()` instead of `stderr` |
 | `0003-drop-diagnostic-suppressions.patch` | removes nine `#pragma GCC/clang diagnostic ignored` lines |
 | `0004-mingw-teb-array-bounds.patch` | reads `NT_TIB::Self` directly instead of via `__readgsqword()`, so Rtools' MinGW headers stop tripping `-Warray-bounds` |
+| `0005-c23-keyword-macros.patch` | defines `bool`/`true`/`false`/`nullptr` only before C23, where they are not yet keywords, so clang stops tripping `-Wkeyword-macro` |
 
 Each patch file carries its own rationale and caveats in its header. 0001 and 0002 depend on the
-hook implementations in [../../src/r_mdbx_hooks.cpp](../../src/r_mdbx_hooks.cpp); 0003 is
-behaviour-neutral and only affects which warnings are printed; 0004 changes generated code, but
+hook implementations in [../../src/r_mdbx_hooks.cpp](../../src/r_mdbx_hooks.cpp); 0003 and 0005
+are behaviour-neutral and only affect which warnings are printed; 0004 changes generated code, but
 only on MinGW GCC.
 
-`mdbx.h`, `LICENSE`, `NOTICE` and `COPYRIGHT` are untouched — their upstream digests in
-`.agents/vendoring.md` still verify.
+0005 is the only patch that touches `mdbx.h`. `LICENSE`, `NOTICE` and `COPYRIGHT` are untouched —
+their upstream digests in `.agents/vendoring.md` still verify.
 
 ## Applying
 
@@ -31,7 +32,8 @@ for p in tools/patches/*.patch; do patch -p1 < "$p"; done
 ```
 
 Order matters: 0001, 0002 and 0004 all edit `mdbx.c`, and each one's hunk offsets assume its
-predecessors have already been applied.
+predecessors have already been applied. 0005 is independent of the rest — it is the only one that
+edits `mdbx.h`, and its `mdbx-internals.h` hunk does not overlap 0003's.
 
 ## Expected result
 
@@ -39,7 +41,8 @@ Applying the full series to pristine libmdbx v0.14.3 must yield exactly:
 
 ```
 492def30b368eda82cc0ec3502fe390d0742bbf7f4d8d37b65136ea4497d36e2  mdbx.c
-993883e5bc29f66b73343c93dcbe857bb9213db38e405ca36c555c5f5190832d  mdbx-internals.h
+1d2fc0eb6477a3ea6f5a0a17ca65aa874a3b9bd299167c5645f16f45aa133b96  mdbx.h
+d50c2af7ef92ec77d17cb1370bdd40f8c4483f7643379f74d377c0f3017dd817  mdbx-internals.h
 ```
 
 If a patch fails to apply after a version bump, re-do that edit by hand against the new source,
