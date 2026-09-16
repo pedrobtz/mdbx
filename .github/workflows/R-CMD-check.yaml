@@ -30,3 +30,8 @@ jobs:
       # gs+qpdf shrinks the vignette PDFs, which --as-cran NOTEs otherwise.
       # Reaches the runners only; the container images have neither tool.
       build-args: 'c("--no-manual", "--compact-vignettes=gs+qpdf")'
+      # EXPERIMENT (control branch only): ubuntu-clang ships clang-22, while
+      # CRAN's debian-clang leg is clang 23.1.0. r-hub also publishes a
+      # clang23 image. Run all three and let the toolchain step say what
+      # each one actually is.
+      containers: '["ubuntu-clang", "clang23", "ubuntu-gcc16"]'
