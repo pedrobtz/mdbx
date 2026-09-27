@@ -465,7 +465,7 @@ can outlive its own validity.
 
 ---
 
-## Stage 7 — Release hardening
+## Stage 7 — Release hardening — **DONE**
 
 - [x] `R CMD check --as-cran` clean on all five CI legs, plus sanitizers, valgrind, LTO,
       gctorture and rchk. All green at `e80a18a`.
@@ -692,6 +692,29 @@ out each change rather than deferring to the patch series.
 `cf3e1393` and commit `f7a3a932` for v0.14.3, both matching `.agents/vendoring.md`. The third
 identifier there, `v0.14.3-0-g251562b2`, is the amalgamation string upstream bakes into the sources
 and is not the tag commit — worth knowing before mistaking it for a mismatch.
+
+### CRAN submission
+
+0.1.0 took three uploads and was accepted on 27 September 2026. The record is worth keeping
+because both rejections are the kind the whole portfolio can pre-empt:
+
+- **3 September, first upload.** Passed the pretest and sat in the queue for nine days. The
+  reviewer's one ask, on 12 September, was `\value` for every exported topic, describing the class
+  and structure of what comes back. `mdbx_scan_max` was the only gap: exported data rather than a
+  function, so roxygen had not prompted for one. The resubmission also carried the
+  `mdbx_dbi_drop()` fix, since the main database could not safely be emptied while named ones
+  existed.
+- **16 September, second upload.** Archived by the pretest within ten minutes: the Debian clang-23
+  leg builds C as `-std=gnu23`, and the vendored header's pre-C23 `bool`/`true`/`false`/`nullptr`
+  macros shadowed the new keywords (`-Wkeyword-macro`). Fixed the same day as the fifth local
+  patch, and the `ubuntu-clang` container leg was added to CI because no GitHub runner is that
+  compiler/standard combination.
+- **16 September, third upload.** Passed the pretest, waited eleven days for the human review, and
+  was accepted without further comment.
+
+`cran-comments.md` is the text that went with the third upload. The tarball was built from
+`9c34172`, which `CRAN-SUBMISSION` records; `usethis::use_github_release()` reads that file to tag
+the release, so leave it in place until the tag exists.
 
 ---
 
