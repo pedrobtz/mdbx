@@ -52,3 +52,6 @@ rsconnect/
 *.gcno
 *.gcda
 *.gcov
+
+# devtools::submit_cran() writes this; it records one submission, not source
+CRAN-SUBMISSION
