@@ -1,0 +1,13 @@
+# Throwaway: runs pedrobtz/r-actions#feature/cran-aligned-ubsan against this
+# tree to validate the new UBSan legs before release. Do not merge.
+on:
+  pull_request:
+
+name: ubsan-probe
+
+permissions:
+  contents: read
+
+jobs:
+  sanitizers:
+    uses: pedrobtz/r-actions/.github/workflows/sanitizers.yml@feature/cran-aligned-ubsan
