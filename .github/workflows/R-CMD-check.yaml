@@ -30,3 +30,12 @@ jobs:
       # gs+qpdf shrinks the vignette PDFs, which --as-cran NOTEs otherwise.
       # Reaches the runners only; the container images have neither tool.
       build-args: 'c("--no-manual", "--compact-vignettes=gs+qpdf")'
+      # The default matrix plus Windows on R-devel. CRAN's incoming pretest
+      # runs on two machines, Debian R-devel and Windows R-devel; the
+      # containers cover the first, and nothing else here reached the second.
+      runners: |
+        [{"os": "macos-latest", "r": "release"},
+         {"os": "windows-latest", "r": "release"},
+         {"os": "windows-latest", "r": "devel"},
+         {"os": "ubuntu-latest", "r": "release"},
+         {"os": "ubuntu-latest", "r": "oldrel-1"}]

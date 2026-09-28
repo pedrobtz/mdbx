@@ -4,6 +4,12 @@ This update fixes the issues reported for mdbx 0.1.0 under "Additional issues"
 on the CRAN check page (clang-UBSAN and gcc-UBSAN), and in the M1-SAN results
 for macOS arm64. All of them are in the bundled 'libmdbx' sources.
 
+https://cran.r-project.org/web/checks/check_results_mdbx.html
+
+This responds to Prof. Ripley's two emails of 2026-09-28, which asked for
+these problems to be corrected before 2026-10-19. That is why this update
+follows the acceptance of 0.1.0 so closely.
+
 * Misaligned loads and stores (`mdbx.c:597`, `627`, `647`, `664`, `685`, `701`,
   and `224` via `fetch_txnid`). 'libmdbx' decides at compile time whether to
   dereference misaligned integer pointers directly, and enables that on x86-64

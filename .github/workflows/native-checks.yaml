@@ -134,3 +134,11 @@ jobs:
 
   rchk:
     uses: pedrobtz/r-actions/.github/workflows/rchk.yml@v1
+
+  # CRAN's rcnst, rlibro and vnu checks -- the "Additional issues" nothing
+  # above reproduces. Full runs only: `quick`, which skips all three, on
+  # pull requests; full on the push to main.
+  cran-special:
+    uses: pedrobtz/r-actions/.github/workflows/cran-special.yml@v1
+    with:
+      profile: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-ci') && 'quick' || 'full' }}
