@@ -1,9 +1,7 @@
 # Native-code checks for the C/C++ sources: sanitizers (ASan/UBSan), valgrind,
 # LTO, gctorture, and rchk, via the reusable workflows in pedrobtz/r-actions.
 #
-# Four of the five are called as-is. Sanitizers are run from a local job instead
-# because this package needs one flag the reusable workflow does not take: see
-# the comment on CFLAGS below.
+# All five are called as-is.
 #
 # paths-ignore skips the whole workflow for prose-only changes. These jobs
 # compile the package and run the suite, so nothing they can observe lives in
@@ -37,60 +35,21 @@ name: native-checks
 permissions: read-all
 
 jobs:
+  # UBSan on a runner (clang, the whole `undefined` group, halt_on_error), plus
+  # the R-hub clang-asan and gcc-asan containers. Between them these are
+  # CRAN's clang-UBSAN and gcc-UBSAN flavors: gcc-asan compiles with
+  # -fsanitize=address,undefined,bounds-strict from its own Makeconf, and
+  # bounds-strict is the one that sees libmdbx's trailing-array struct hacks.
+  #
+  # This used to be a local copy of the job with -fno-sanitize=alignment on
+  # CFLAGS, because libmdbx dereferenced misaligned pointers. That hid exactly
+  # what CRAN then reported against 0.1.0. The alignment reports are fixed at
+  # the source now (MDBX_UNALIGNED_OK=0 in src/Makevars, tools/patches/0006 for
+  # bounds-strict), so nothing here is relaxed any more.
   sanitizers:
-    runs-on: ubuntu-latest
-    env:
-      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
-      R_KEEP_PKG_SOURCE: yes
-      CC: clang
-      CXX: clang++
-
-      # -fno-sanitize=alignment applies to CFLAGS only, and vendor/libmdbx/mdbx.c
-      # is the only C file in the package -- so this relaxes exactly the vendored
-      # amalgamation and leaves every first-party source fully checked.
-      #
-      # libmdbx does deliberate unaligned access, gated on its own compile-time
-      # MDBX_UNALIGNED_OK; `unaligned_poke_u32` (mdbx.c:647) is a plain
-      # `*(uint32_t *)ptr = v` that is correct on every platform this package
-      # builds for and undefined by the letter of the standard. Verified locally:
-      # one UBSan site, zero once alignment is excluded, with all other UBSan
-      # checks still active.
-      CFLAGS: -g -O1 -fsanitize=address,undefined -fno-sanitize=alignment -fno-omit-frame-pointer
-      CXXFLAGS: -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer
-      LDFLAGS: -fsanitize=address,undefined
-      ASAN_OPTIONS: detect_leaks=1:strict_init_order=1
-
-      # halt_on_error is not UBSan's default: without it a diagnostic is printed
-      # and execution continues, so R CMD check would pass with sanitizer errors
-      # buried in the test log.
-      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang
-
-      - uses: r-lib/actions/setup-r@v2
-        with:
-          r-version: devel
-          http-user-agent: release
-
-      - uses: r-lib/actions/setup-r-dependencies@v2
-        with:
-          extra-packages: any::rcmdcheck
-          needs: check
-
-      - name: Run R CMD check with sanitizers
-        shell: Rscript {0}
-        run: |
-          rcmdcheck::rcmdcheck(
-            args = c("--no-manual", "--as-cran"),
-            build_args = c("--no-manual"),
-            error_on = "warning"
-          )
+    uses: pedrobtz/r-actions/.github/workflows/sanitizers.yml@v1
+    with:
+      asan: true
 
   # Two things this job is the home of.
   #

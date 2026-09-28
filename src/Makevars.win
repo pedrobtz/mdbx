@@ -9,6 +9,17 @@
 # MDBX_BUILD_FLAGS silences a #warning in mdbx.c; the value is only reported
 # through mdbx_build.flags and is space-free to survive make/shell quoting.
 #
+# MDBX_UNALIGNED_OK=0 routes libmdbx's unaligned reads and writes through its
+# byte-copy and split-word paths. Left to itself it picks 8 on x86-64 and 4 on
+# arm64, and then dereferences misaligned uint16/32/64 pointers directly --
+# undefined behaviour that CRAN's clang-UBSAN and gcc-UBSAN flavors report.
+# libmdbx only detects a sanitizer through __SANITIZE_UNDEFINED__ or
+# ENABLE_UBSAN, neither of which CRAN's builds define, so it has to be set
+# here. The byte copies compile back to single loads at -O2; the one real
+# cost is that a meta-page txnid is read and written as two 32-bit atomics
+# rather than one 64-bit, the path libmdbx already takes on every non-x86
+# target -- including the arm64 Macs this package builds for.
+#
 # Optimisation, PIC and ABI flags are deliberately left to R.
 #
 # _WIN32_WINNT is mandatory, not tuning: a non-DLL libmdbx build fails with an
@@ -20,6 +31,7 @@ PKG_CPPFLAGS = -Ivendor/libmdbx \
 	-DMDBX_BUILD_FLAGS='"R-CMD-SHLIB"' \
 	-DMDBX_ENV_CHECKPID=1 \
 	-DMDBX_TXN_CHECKOWNER=1 \
+	-DMDBX_UNALIGNED_OK=0 \
 	-D_WIN32_WINNT=0x0A00 \
 	-DWIN32_LEAN_AND_MEAN=1 \
 	-DNOMINMAX=1

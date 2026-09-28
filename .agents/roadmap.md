@@ -469,8 +469,9 @@ can outlive its own validity.
 
 - [x] `R CMD check --as-cran` clean on all five CI legs, plus sanitizers, valgrind, LTO,
       gctorture and rchk. All green at `e80a18a`.
-- [x] Run under ASan/UBSan and valgrind. Disable UBSan's alignment check — libmdbx deliberately
-      uses unaligned x86 loads/stores. `.github/workflows/native-checks.yaml`.
+- [x] Run under ASan/UBSan and valgrind. `.github/workflows/native-checks.yaml`. (0.1.0 shipped
+      with UBSan's alignment check disabled; CRAN's UBSAN flavors then reported it. Fixed in 0.1.1
+      — see *Native checks in CI* below.)
 - [x] Run `rchk` for protection errors — same workflow.
 - [x] Interoperability spot-check: write with R, read with another MDBX implementation, and the
       reverse. `tools/interop-check.sh`.
@@ -483,23 +484,20 @@ can outlive its own validity.
 
 ### Native checks in CI
 
-`.github/workflows/native-checks.yaml` runs sanitizers, valgrind, LTO, gctorture and rchk. Four of
-the five call the reusable workflows in `pedrobtz/r-actions@v1` directly; sanitizers is a local copy,
-for two reasons that the reusable workflow cannot express (it declares `workflow_call` with no
-`inputs`):
+`.github/workflows/native-checks.yaml` runs sanitizers, valgrind, LTO, gctorture and rchk, all five
+through the reusable workflows in `pedrobtz/r-actions@v1`. The sanitizer leg is
+`sanitizers.yml` with `asan: true`: clang UBSan on a runner with `halt_on_error=1`, plus the R-hub
+`clang-asan` and `gcc-asan` containers, which are CRAN's two sanitizer flavors.
 
-- **UBSan alignment has to be off for the vendored code.** Confirmed rather than assumed: one site,
-  `unaligned_poke_u32` at `mdbx.c:647`, a plain `*(uint32_t *)ptr = v` that libmdbx gates on its own
-  compile-time `MDBX_UNALIGNED_OK`. `-fno-sanitize=alignment` goes in `CFLAGS` only — and
-  `vendor/libmdbx/mdbx.c` is the only C file in the package, so that relaxes exactly the
-  amalgamation and leaves all four first-party C++ sources fully checked. Verified locally: the flag
-  lands on that file alone, and the suite then runs 372/372 with zero UBSan diagnostics.
-- **`halt_on_error=1` in `UBSAN_OPTIONS`.** UBSan's default is to print and continue, so `R CMD
-  check` would pass with sanitizer errors buried in the test log; ASan aborts by default and UBSan
-  does not. Without this the leg cannot fail.
-
-Both would fold back into a plain `uses:` if `r-actions/sanitizers.yml` gained `extra_cflags` and
-`ubsan_options` inputs.
+**It was a local copy until 0.1.1, and that copy is why CRAN found what CI did not.** It set
+`-fno-sanitize=alignment` on `CFLAGS` to silence libmdbx's deliberate misaligned accesses — found
+at one site (`unaligned_poke_u32`, `mdbx.c:647`) and judged benign — and it ran clang alone, so
+gcc's `bounds-strict` never ran. CRAN's clang-UBSAN and gcc-UBSAN runs against 0.1.0 reported
+both classes, and the misaligned reads leaked into `test-process.R`'s captured child output as six
+failures. Both are now fixed at the source rather than relaxed in CI: `-DMDBX_UNALIGNED_OK=0` in
+`src/Makevars`, and `tools/patches/0006`. See *Build flags* and *Patch 6* in
+[vendoring.md](vendoring.md). The lesson: a sanitizer opt-out is a claim about every future code
+path, not about the one site that was measured — five sites fired on CRAN, not one.
 
 **gctorture is the slow leg.** The full suite under `gctorture2(step = 20)` takes about 13 minutes
 on an M-series Mac; `r-actions/gctorture.yml` allows 60, and GitHub runners are perhaps 2-3x slower,

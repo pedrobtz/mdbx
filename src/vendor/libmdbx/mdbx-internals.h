@@ -1393,6 +1393,12 @@ typedef struct ior_item {
   };
 } ior_item_t;
 
+/* R package patch: items are allocated with room for more segments than sgv[]
+ * declares, and a flexible array member cannot live in a union. Indexing
+ * through a pointer keeps -fsanitize=bounds-strict from flagging every
+ * multi-segment write. See tools/patches. */
+#define ior_sgv(item) ((ior_sgv_element *)(void *)(item)->sgv)
+
 typedef struct osal_ioring {
   unsigned slots_left;
   unsigned allocated;

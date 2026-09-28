@@ -43,7 +43,11 @@ Rtools' MinGW headers; remove nine upstream diagnostic-suppression pragmas
 (#pragma GCC/clang diagnostic ignored ...), which are unnecessary under R's
 compilation flags and trip CRAN's pragma check; and restrict the compatibility
 definitions of bool, true, false and nullptr to compilers older than C23, which
-promoted all four to keywords. Together these ensure no compiled code writes to
+promoted all four to keywords; and declare three trailing arrays that are
+deliberately indexed past their declared length (the dirty-page list, the
+defragmentation map list and the write-ring gather list) as C99 flexible array
+members, or index them through a pointer, so that bounds-checking sanitizers do
+not report them. Allocation sizes are unchanged. Together these ensure no compiled code writes to
 stderr or terminates the R process. Each change is also recorded as a patch in
 tools/patches/ in the package's source repository. LICENSE, NOTICE and COPYRIGHT
 are unmodified.
