@@ -74,7 +74,7 @@ Set in `src/Makevars` and `src/Makevars.win`:
 - `-DMDBX_UNALIGNED_OK=0` — send every unaligned 16/32/64-bit access through libmdbx's byte-copy
   and split-word paths. Upstream picks 8 on x86-64 and 4 on arm64 and then dereferences
   misaligned `uint*_t` pointers directly, which is undefined behaviour and is what CRAN's
-  clang-UBSAN and gcc-UBSAN flavors reported against 0.1.0 (`unaligned_peek_u16/u32/u64`,
+  clang-UBSAN and gcc-UBSAN flavors, and the M1-SAN macOS run, reported against 0.1.0 (`unaligned_peek_u16/u32/u64`,
   `unaligned_poke_u32/u64`, and `atomic_load64` via `fetch_txnid`). libmdbx already defaults to 0
   under a sanitizer, but only detects one through `__SANITIZE_UNDEFINED__` or `ENABLE_UBSAN`, and
   CRAN defines neither. At -O2 the byte copies compile back to single loads; the one behavioural
