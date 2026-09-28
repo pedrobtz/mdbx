@@ -1,0 +1,13 @@
+# Throwaway: runs pedrobtz/r-actions#feature/cran-special against this tree.
+# Do not merge.
+on:
+  pull_request:
+
+name: cran-special-probe
+
+permissions:
+  contents: read
+
+jobs:
+  cran-special:
+    uses: pedrobtz/r-actions/.github/workflows/cran-special.yml@feature/cran-special
