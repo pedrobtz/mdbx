@@ -21,11 +21,12 @@ for macOS arm64. All of them are in the bundled 'libmdbx' sources.
   local patch to the bundled sources, and `inst/COPYRIGHTS` now describes it.
 
 * The `test-process.R` failures (six in each Linux log, one in the M1-SAN
-  log) were a consequence of the first item. Those tests capture a child `Rscript`'s output, and the UBSAN
-  diagnostics printed by the child ended up in that output. With the
-  diagnostics gone, the tests pass.
+  log) were a consequence of the first item. Those tests capture a child
+  `Rscript`'s output, and the UBSAN diagnostics printed by the child ended up
+  in that output. With the diagnostics gone, the tests pass.
 
-I reproduced both reports locally at the flags in the memtests README.
+I reproduced all three reports locally at the flags in the memtests and
+M1-SAN READMEs.
 
 * clang: `-fsanitize=undefined -fno-sanitize=function`, against the full test
   suite. 0.1.0 gives the same five sites and the same 6 failures / 982 passes
