@@ -39,7 +39,7 @@
     </div>
 
     <div class="section level2">
-<h2 class="pkg-version" data-toc-text="0.1.1" id="mdbx-011">mdbx 0.1.1<a class="anchor" aria-label="anchor" href="#mdbx-011"></a></h2>
+<h2 class="pkg-version" data-toc-text="0.1.1" id="mdbx-011">mdbx 0.1.1<a class="anchor" aria-label="anchor" href="#mdbx-011"></a></h2><p class="text-muted">CRAN release: 2026-09-28</p>
 <ul><li>Fixes the undefined behaviour CRAN’s clang-UBSAN and gcc-UBSAN checks reported in the bundled ‘libmdbx’ sources. ‘libmdbx’ read and wrote 16-, 32- and 64-bit values through misaligned pointers on x86-64 and arm64; it is now built with <code>MDBX_UNALIGNED_OK=0</code>, which routes those accesses through byte copies. Three internal structures that ‘libmdbx’ deliberately indexes past their declared length are now C99 flexible array members, or are indexed through a pointer, so gcc’s <code>-fsanitize=bounds-strict</code> no longer reports them. Nothing observable changes: on-disk format, allocation sizes and results are identical.</li>
 </ul></div>
     <div class="section level2">
