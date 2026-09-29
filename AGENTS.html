@@ -7,7 +7,7 @@
 
     <a class="navbar-brand me-2" href="index.html">mdbx</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Released version">0.1.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Released version">0.1.1</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -35,7 +35,7 @@
   <main id="main" class="col-md-9"><div class="page-header">
 
       <h1>CLAUDE.md</h1>
-      <small class="dont-index">Source: <a href="https://github.com/pedrobtz/mdbx/blob/0.1.0/AGENTS.md" class="external-link"><code>AGENTS.md</code></a></small>
+      <small class="dont-index">Source: <a href="https://github.com/pedrobtz/mdbx/blob/0.1.1/AGENTS.md" class="external-link"><code>AGENTS.md</code></a></small>
     </div>
 
 <div id="claudemd" class="section level1">
@@ -69,13 +69,13 @@
 <p>libmdbx is <strong>vendored as the official amalgamation</strong> into <code>src/vendor/libmdbx/</code> and compiled into the package’s own <code>mdbx.so</code>/<code>mdbx.dll</code>. The amalgamation is <em>three</em> files — <code>mdbx.c</code> includes <code>mdbx-internals.h</code> alongside <code>mdbx.h</code>. There is no submodule, no CMake, no system libmdbx, and no separately dlopen’d library. This is what makes CRAN builds work: the tarball is self-contained and <code>R CMD SHLIB</code> is the only build system.</p>
 <p>Expected <code>src/Makevars</code>:</p>
 <pre class="make"><code>PKG_CPPFLAGS = -Ivendor/libmdbx -D__dll_export= -DMDBX_BUILD_FLAGS='"R-CMD-SHLIB"' \
-               -DMDBX_ENV_CHECKPID=1 -DMDBX_TXN_CHECKOWNER=1
+               -DMDBX_ENV_CHECKPID=1 -DMDBX_TXN_CHECKOWNER=1 -DMDBX_UNALIGNED_OK=0
 PKG_LIBS = -pthread
 # cpp11.o is generated; mdbx.c compiles as C, the rest as C++. R only globs src/
 # itself, so every object is listed -- keep this in sync when adding a source file.
 OBJECTS = cpp11.o r_flags.o r_mdbx.o r_mdbx_hooks.o vendor/libmdbx/mdbx.o</code></pre>
 <p>and <code>src/Makevars.win</code> additionally needs <code>PKG_LIBS = -lntdll -ladvapi32 -luser32</code>.</p>
-<p>Two non-obvious flags: <code>-D__dll_export=</code> (empty) stops libmdbx marking its symbols <code>dllexport</code> on Windows, so the MDBX API does not leak out of the package DLL alongside the registered routines. <code>MDBX_ENV_CHECKPID</code> / <code>MDBX_TXN_CHECKOWNER</code> make MDBX detect cross-process and cross-thread misuse — important because <code><a href="https://rdrr.io/r/parallel/mclapply.html" class="external-link">parallel::mclapply()</a></code>, <code>future</code>, and <code>callr</code> can carry an open environment across a <code>fork()</code>.</p>
+<p>Two non-obvious flags: <code>-D__dll_export=</code> (empty) stops libmdbx marking its symbols <code>dllexport</code> on Windows, so the MDBX API does not leak out of the package DLL alongside the registered routines. <code>MDBX_ENV_CHECKPID</code> / <code>MDBX_TXN_CHECKOWNER</code> make MDBX detect cross-process and cross-thread misuse — important because <code><a href="https://rdrr.io/r/parallel/mclapply.html" class="external-link">parallel::mclapply()</a></code>, <code>future</code>, and <code>callr</code> can carry an open environment across a <code>fork()</code>. <code>MDBX_UNALIGNED_OK=0</code> keeps libmdbx from dereferencing misaligned pointers, which CRAN’s UBSAN flavors reported against 0.1.0 — never relax UBSan’s alignment check in CI to get past one of these again.</p>
 <p>Do <strong>not</strong> set <code>-O3</code>, <code>-flto</code>, or visibility flags in <code>Makevars</code>: CRAN forbids packages overriding R’s own optimization flags. Leave <code>CFLAGS</code> to R.</p>
 </div>
 <div class="section level3">
@@ -111,7 +111,7 @@ OBJECTS = cpp11.o r_flags.o r_mdbx.o r_mdbx_hooks.o vendor/libmdbx/mdbx.o</code>
 </ul></div>
 <div class="section level2">
 <h2 id="the-vendor-tree-is-patched">The vendor tree is patched<a class="anchor" aria-label="anchor" href="#the-vendor-tree-is-patched"></a></h2>
-<p><code>src/vendor/libmdbx/</code> is <strong>not</strong> pristine. Five patches in <code>tools/patches/</code> route libmdbx’s panic and logging through R’s API, drop nine <code>#pragma diagnostic ignored</code> lines, sidestep a false-positive <code>-Warray-bounds</code> from Rtools’ MinGW headers, and keep the pre-C23 <code>bool</code>/<code>nullptr</code> macros from shadowing the C23 keywords. They are applied <strong>by the maintainer during a version bump</strong>, never at build time — <code>tools/update-libmdbx.sh</code> re-vendors and replays the series. Never hand-edit the vendored sources: add or change a patch, regenerate, and update the post-patch digests in <code>tools/patches/README.md</code>. The <em>Local patches</em> section of <a href=".agents/vendoring.html">.agents/vendoring.md</a> carries the narrative — what each patch does, and which alternatives were rejected.</p>
+<p><code>src/vendor/libmdbx/</code> is <strong>not</strong> pristine. Six patches in <code>tools/patches/</code> route libmdbx’s panic and logging through R’s API, drop nine <code>#pragma diagnostic ignored</code> lines, sidestep a false-positive <code>-Warray-bounds</code> from Rtools’ MinGW headers, keep the pre-C23 <code>bool</code>/<code>nullptr</code> macros from shadowing the C23 keywords, and turn three trailing-array struct hacks into forms gcc’s <code>-fsanitize=bounds-strict</code> accepts. They are applied <strong>by the maintainer during a version bump</strong>, never at build time — <code>tools/update-libmdbx.sh</code> re-vendors and replays the series. Never hand-edit the vendored sources: add or change a patch, regenerate, and update the post-patch digests in <code>tools/patches/README.md</code>. The <em>Local patches</em> section of <a href=".agents/vendoring.html">.agents/vendoring.md</a> carries the narrative — what each patch does, and which alternatives were rejected.</p>
 </div>
 <div class="section level2">
 <h2 id="licensing">Licensing<a class="anchor" aria-label="anchor" href="#licensing"></a></h2>

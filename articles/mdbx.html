@@ -24,7 +24,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">mdbx</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Released version">0.1.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Released version">0.1.1</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -65,7 +65,7 @@
       <h1>Getting started with mdbx</h1>
             
       
-      <small class="dont-index">Source: <a href="https://github.com/pedrobtz/mdbx/blob/0.1.0/vignettes/articles/mdbx.Rmd" class="external-link"><code>vignettes/articles/mdbx.Rmd</code></a></small>
+      <small class="dont-index">Source: <a href="https://github.com/pedrobtz/mdbx/blob/0.1.1/vignettes/articles/mdbx.Rmd" class="external-link"><code>vignettes/articles/mdbx.Rmd</code></a></small>
       <div class="d-none name"><code>mdbx.Rmd</code></div>
     </div>
 
@@ -88,7 +88,7 @@ reference documentation of any single function, see its help page.</p>
 <code class="sourceCode R"><span><span class="va">path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/file.path.html" class="external-link">file.path</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempdir</a></span><span class="op">(</span><span class="op">)</span>, <span class="st">"notes.mdbx"</span><span class="op">)</span></span>
 <span><span class="va">env</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mdbx_env_open.html">mdbx_env_open</a></span><span class="op">(</span><span class="va">path</span><span class="op">)</span></span>
 <span><span class="va">env</span></span>
-<span><span class="co">#&gt; &lt;mdbx_env&gt; /tmp/RtmpHgcfMj/notes.mdbx </span></span>
+<span><span class="co">#&gt; &lt;mdbx_env&gt; /tmp/Rtmp4AVsWO/notes.mdbx </span></span>
 <span><span class="co">#&gt;   access: read-write </span></span>
 <span><span class="co">#&gt;   layout: single file </span></span>
 <span><span class="co">#&gt;   status: open</span></span></code></pre></div>
@@ -226,7 +226,7 @@ showing rather than asserting. The cost of a durable commit is paid
 <span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span>per_transaction <span class="op">=</span> <span class="va">per_txn</span>, single_transaction <span class="op">=</span> <span class="va">one_txn</span><span class="op">)</span></span>
 <span><span class="co">#&gt;    per_transaction single_transaction </span></span>
-<span><span class="co">#&gt;              0.067              0.004</span></span></code></pre></div>
+<span><span class="co">#&gt;              0.066              0.003</span></span></code></pre></div>
 <p>Each commit flushes to disk, so the gap is really a count of
 <code>fsync</code> calls. How big it gets depends entirely on the
 filesystem and hardware — the ratio above is whatever the machine that
