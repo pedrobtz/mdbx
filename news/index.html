@@ -7,7 +7,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">mdbx</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Released version">0.1.1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Released version">0.1.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -35,13 +35,9 @@
   <main id="main" class="col-md-9"><div class="page-header">
 
       <h1>Changelog</h1>
-      <small>Source: <a href="https://github.com/pedrobtz/mdbx/blob/main/NEWS.md" class="external-link"><code>NEWS.md</code></a></small>
+      <small>Source: <a href="https://github.com/pedrobtz/mdbx/blob/0.1.0/NEWS.md" class="external-link"><code>NEWS.md</code></a></small>
     </div>
 
-    <div class="section level2">
-<h2 class="pkg-version" data-toc-text="0.1.1" id="mdbx-011">mdbx 0.1.1<a class="anchor" aria-label="anchor" href="#mdbx-011"></a></h2><p class="text-muted">CRAN release: 2026-09-28</p>
-<ul><li>Fixes the undefined behaviour CRAN’s clang-UBSAN and gcc-UBSAN checks reported in the bundled ‘libmdbx’ sources. ‘libmdbx’ read and wrote 16-, 32- and 64-bit values through misaligned pointers on x86-64 and arm64; it is now built with <code>MDBX_UNALIGNED_OK=0</code>, which routes those accesses through byte copies. Three internal structures that ‘libmdbx’ deliberately indexes past their declared length are now C99 flexible array members, or are indexed through a pointer, so gcc’s <code>-fsanitize=bounds-strict</code> no longer reports them. Nothing observable changes: on-disk format, allocation sizes and results are identical.</li>
-</ul></div>
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.1.0" id="mdbx-010">mdbx 0.1.0<a class="anchor" aria-label="anchor" href="#mdbx-010"></a></h2><p class="text-muted">CRAN release: 2026-09-27</p>
 <ul><li><p>Initial version.</p></li>
@@ -51,8 +47,7 @@
 <li><p><code><a href="../reference/mdbx_dbi_drop.html">mdbx_dbi_drop()</a></code> refuses to empty the main database while the environment holds any named database. A named database is a record in the main database, so ‘libmdbx’ purges every one of them along with it – silent, irreversible, and the opposite of what “removes every record but keeps the database” leads a caller to expect. Drop them by name first, or delete the main database’s keys individually.</p></li>
 <li><p><code>mdbx_dbi_drop(db = NULL, delete = TRUE)</code> is now an error. The main database records the named ones and cannot be deleted; ‘libmdbx’ silently ignores the request and reports success, so the caller was told a deletion had happened when it had not.</p></li>
 </ul></div>
-  </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
-    </nav></aside></div>
+  </main></div>
 
 
     <footer><div class="pkgdown-footer-left">

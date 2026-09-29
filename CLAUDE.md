@@ -107,7 +107,7 @@ Expected `src/Makevars`:
 
 ``` make
 PKG_CPPFLAGS = -Ivendor/libmdbx -D__dll_export= -DMDBX_BUILD_FLAGS='"R-CMD-SHLIB"' \
-               -DMDBX_ENV_CHECKPID=1 -DMDBX_TXN_CHECKOWNER=1 -DMDBX_UNALIGNED_OK=0
+               -DMDBX_ENV_CHECKPID=1 -DMDBX_TXN_CHECKOWNER=1
 PKG_LIBS = -pthread
 # cpp11.o is generated; mdbx.c compiles as C, the rest as C++. R only globs src/
 # itself, so every object is listed -- keep this in sync when adding a source file.
@@ -124,9 +124,6 @@ the package DLL alongside the registered routines. `MDBX_ENV_CHECKPID` /
 misuse — important because
 [`parallel::mclapply()`](https://rdrr.io/r/parallel/mclapply.html),
 `future`, and `callr` can carry an open environment across a `fork()`.
-`MDBX_UNALIGNED_OK=0` keeps libmdbx from dereferencing misaligned
-pointers, which CRAN’s UBSAN flavors reported against 0.1.0 — never
-relax UBSan’s alignment check in CI to get past one of these again.
 
 Do **not** set `-O3`, `-flto`, or visibility flags in `Makevars`: CRAN
 forbids packages overriding R’s own optimization flags. Leave `CFLAGS`
@@ -226,17 +223,16 @@ follows one of them:
 
 ## The vendor tree is patched
 
-`src/vendor/libmdbx/` is **not** pristine. Six patches in
+`src/vendor/libmdbx/` is **not** pristine. Five patches in
 `tools/patches/` route libmdbx’s panic and logging through R’s API, drop
 nine `#pragma diagnostic ignored` lines, sidestep a false-positive
-`-Warray-bounds` from Rtools’ MinGW headers, keep the pre-C23
-`bool`/`nullptr` macros from shadowing the C23 keywords, and turn three
-trailing-array struct hacks into forms gcc’s `-fsanitize=bounds-strict`
-accepts. They are applied **by the maintainer during a version bump**,
-never at build time — `tools/update-libmdbx.sh` re-vendors and replays
-the series. Never hand-edit the vendored sources: add or change a patch,
-regenerate, and update the post-patch digests in
-`tools/patches/README.md`. The *Local patches* section of
+`-Warray-bounds` from Rtools’ MinGW headers, and keep the pre-C23
+`bool`/`nullptr` macros from shadowing the C23 keywords. They are
+applied **by the maintainer during a version bump**, never at build time
+— `tools/update-libmdbx.sh` re-vendors and replays the series. Never
+hand-edit the vendored sources: add or change a patch, regenerate, and
+update the post-patch digests in `tools/patches/README.md`. The *Local
+patches* section of
 [.agents/vendoring.md](https://pedrobtz.github.io/mdbx/.agents/vendoring.md)
 carries the narrative — what each patch does, and which alternatives
 were rejected.
