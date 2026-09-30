@@ -11,7 +11,7 @@ transactions and all data access happen against one."><meta name="robots" conten
 
     <a class="navbar-brand me-2" href="../index.html">mdbx</a>
 
-    <small class="nav-text text-danger me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="In-development version">0.0.9000</small>
+    <small class="nav-text text-danger me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="In-development version">0.1.1.9000</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -24,6 +24,7 @@ transactions and all data access happen against one."><meta name="robots" conten
 <li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="../articles/cache.html">Designing a disk cache on mdbx</a></li>
+    <li><a class="dropdown-item" href="../articles/workflow.html">A worked example, end to end</a></li>
   </ul></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
       </ul><ul class="navbar-nav"><li class="nav-item"><form class="form-inline" role="search">
@@ -38,7 +39,7 @@ transactions and all data access happen against one."><meta name="robots" conten
   <main id="main" class="col-md-9"><div class="page-header">
 
       <h1>Open an MDBX environment</h1>
-      <small class="dont-index">Source: <a href="https://github.com/pedrobtz/mdbx/blob/develop/R/env.R" class="external-link"><code>R/env.R</code></a></small>
+      <small class="dont-index">Source: <a href="https://github.com/pedrobtz/mdbx/blob/main/R/env.R" class="external-link"><code>R/env.R</code></a></small>
       <div class="d-none name"><code>mdbx_env_open.Rd</code></div>
     </div>
 
@@ -146,6 +147,16 @@ Durability section of <code><a href="mdbx_flags.html">mdbx_flags()</a></code> be
     <p>The environment is closed when <code><a href="mdbx_env_close.html">mdbx_env_close()</a></code> is called on it, or when the
 object is garbage collected, whichever happens first. Relying on garbage
 collection is safe but not timely; close explicitly when the moment matters.</p>
+<p>One handle per environment per process. 'libmdbx' documents opening an
+environment more than once from a single process as an error, so a second
+call on a path this process already has open is refused whatever its other
+arguments say — keep the handle you were given and share it, or close it
+first. The refusal looks past the spelling: a relative path and an absolute
+one, a symlinked directory, and the <code>mdbx.dat</code> inside a <code>subdir = TRUE</code>
+environment all name the environment they resolve to, and the message says
+which spelling the open handle was created under. Other processes are
+unaffected: opening the same environment concurrently from several of them
+is the normal case, and the one <a href="mdbx-concurrency.html">mdbx-concurrency</a> is about.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
@@ -159,7 +170,7 @@ collection is safe but not timely; close explicitly when the moment matters.</p>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="va">env</span> <span class="op">&lt;-</span> <span class="fu">mdbx_env_open</span><span class="op">(</span><span class="va">path</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">env</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mdbx_env&gt; /tmp/RtmpNTEo83/file1c601e729eee.mdbx </span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mdbx_env&gt; /tmp/Rtmpf35Bvt/file1ab041e1ae3e.mdbx </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   access: read-write </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   layout: single file </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   status: open </span>

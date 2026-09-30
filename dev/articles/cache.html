@@ -25,7 +25,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">mdbx</a>
 
-    <small class="nav-text text-danger me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="In-development version">0.0.9000</small>
+    <small class="nav-text text-danger me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="In-development version">0.1.1.9000</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -40,6 +40,7 @@
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="../articles/cache.html">Designing a disk cache on mdbx</a></li>
+    <li><a class="dropdown-item" href="../articles/workflow.html">A worked example, end to end</a></li>
   </ul>
 </li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
@@ -65,14 +66,14 @@
       <h1>Designing a disk cache on mdbx</h1>
             
       
-      <small class="dont-index">Source: <a href="https://github.com/pedrobtz/mdbx/blob/develop/vignettes/articles/cache.Rmd" class="external-link"><code>vignettes/articles/cache.Rmd</code></a></small>
+      <small class="dont-index">Source: <a href="https://github.com/pedrobtz/mdbx/blob/main/vignettes/articles/cache.Rmd" class="external-link"><code>vignettes/articles/cache.Rmd</code></a></small>
       <div class="d-none name"><code>cache.Rmd</code></div>
     </div>
 
     
     
 <div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://github.com/pedrobtz/mdbx" class="external-link">mdbx</a></span><span class="op">)</span></span></code></pre></div>
+<code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://pedrobtz.github.io/mdbx/">mdbx</a></span><span class="op">)</span></span></code></pre></div>
 <p>Python’s <a href="https://github.com/grantjenks/python-diskcache" class="external-link">diskcache</a> is a
 disk-backed cache built on SQLite, and <a href="https://github.com/lmmx/polars-diskcache" class="external-link">polars-diskcache</a>
 layers on top of it: the DataFrame goes to a Parquet file, and diskcache

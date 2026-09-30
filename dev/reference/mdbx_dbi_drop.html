@@ -11,7 +11,7 @@ reopening it needs create = TRUE again."><meta name="robots" content="noindex"><
 
     <a class="navbar-brand me-2" href="../index.html">mdbx</a>
 
-    <small class="nav-text text-danger me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="In-development version">0.0.9000</small>
+    <small class="nav-text text-danger me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="In-development version">0.1.1.9000</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -24,6 +24,7 @@ reopening it needs create = TRUE again."><meta name="robots" content="noindex"><
 <li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="../articles/cache.html">Designing a disk cache on mdbx</a></li>
+    <li><a class="dropdown-item" href="../articles/workflow.html">A worked example, end to end</a></li>
   </ul></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
       </ul><ul class="navbar-nav"><li class="nav-item"><form class="form-inline" role="search">
@@ -38,7 +39,7 @@ reopening it needs create = TRUE again."><meta name="robots" content="noindex"><
   <main id="main" class="col-md-9"><div class="page-header">
 
       <h1>Empty or delete a named database</h1>
-      <small class="dont-index">Source: <a href="https://github.com/pedrobtz/mdbx/blob/develop/R/dbi.R" class="external-link"><code>R/dbi.R</code></a></small>
+      <small class="dont-index">Source: <a href="https://github.com/pedrobtz/mdbx/blob/main/R/dbi.R" class="external-link"><code>R/dbi.R</code></a></small>
       <div class="d-none name"><code>mdbx_dbi_drop.Rd</code></div>
     </div>
 
@@ -58,12 +59,14 @@ reopening it needs <code>create = TRUE</code> again.</p>
 
 
 <dl><dt id="arg-txn">txn<a class="anchor" aria-label="anchor" href="#arg-txn"></a></dt>
-<dd><p>An <code>mdbx_txn</code> object from <code><a href="mdbx_txn_begin.html">mdbx_txn_begin()</a></code>, opened for writing.</p></dd>
+<dd><p>An <code>mdbx_txn</code> object from <code><a href="mdbx_txn_begin.html">mdbx_txn_begin()</a></code>, opened for writing.
+Both emptying and deleting are writes, so a read transaction is refused.</p></dd>
 
 
 <dt id="arg-db">db<a class="anchor" aria-label="anchor" href="#arg-db"></a></dt>
 <dd><p>An <code>mdbx_dbi</code> object from <code><a href="mdbx_dbi_open.html">mdbx_dbi_open()</a></code>, or <code>NULL</code> for the main
-database — which can be emptied but not deleted.</p></dd>
+database — which can never be deleted, and can be emptied only while no
+named database exists to be destroyed along with it.</p></dd>
 
 
 <dt id="arg-delete">delete<a class="anchor" aria-label="anchor" href="#arg-delete"></a></dt>
@@ -76,7 +79,20 @@ database — which can be emptied but not deleted.</p></dd>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
-    <p>Like every other write, this takes effect only when the transaction commits.</p>
+    <p>The main database is the exception, twice over. It is what records the named
+ones, so it cannot be deleted at all: <code>db = NULL</code> with <code>delete = TRUE</code> is an
+error rather than the quiet emptying 'libmdbx' would perform. And emptying it
+destroys every named database along with it, for the same reason — so that is
+refused too while any named database exists. Drop those by name first if you
+really mean to, or delete the main database's own keys individually.</p>
+<p>Emptying a database that holds records also resets its
+<a href="mdbx_dbi_sequence.html">sequence counter</a> to zero, because 'libmdbx' rewrites
+the database's record and the counter lives in it. (Emptying one that is
+already empty rewrites nothing and leaves the counter alone, but that is not
+a distinction to build on.) Do not rely on ids minted before an emptying
+staying unique afterwards — if they are still referenced somewhere, remove
+the records by deleting their keys instead.</p>
+<p>Like every other write, this takes effect only when the transaction commits.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>

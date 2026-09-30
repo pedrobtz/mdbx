@@ -6,14 +6,22 @@ with code in this repository.
 ## Project state
 
 `mdbx` is an R binding to [libmdbx](https://libmdbx.dqdkfa.ru/), an
-embedded transactional key-value store. **Stages 0-6 of the roadmap are
-done**: the vendored build is green on all five CI legs, environments
-live in `src/r_mdbx.cpp` + `R/env.R`, transactions in `R/txn.R`,
-get/put/del in `R/data.R`, stat/info in `R/stat.R`, key listing in
-`R/scan.R`, environment/transaction flags in `src/r_flags.cpp` +
-`R/flags.R`, and the concurrency contract in `R/concurrency.R`. Stage 7
-(release hardening) is next. `DESCRIPTION` is filled in; the license is
-MIT.
+embedded transactional key-value store. **0.1.1 is on CRAN**, published
+on 28 September 2026. 0.1.0 was accepted the day before, at the third
+upload; CRAN’s clang-UBSAN, gcc-UBSAN and M1-SAN checks then reported
+undefined behaviour in the bundled libmdbx, and 0.1.1 is the fix,
+resubmitted the same day. Every stage of the roadmap through Stage 7
+(release hardening) is done. The vendored build is green on all five CI
+legs, environments live in `src/r_mdbx.cpp` + `R/env.R`, transactions in
+`R/txn.R`, get/put/del in `R/data.R`, stat/info in `R/stat.R`, key
+listing in `R/scan.R`, environment/transaction flags in
+`src/r_flags.cpp` + `R/flags.R`, and the concurrency contract in
+`R/concurrency.R`. The default branch carries the development version
+`0.1.1.9000`; the next release is 0.2, whose scope is the *Feature gap*
+section of the roadmap, cursors first. CRAN asks that updates come no
+more often than every one to two months, so nothing goes back before 9
+November 2026, six weeks after 0.1.1 (the `cran-release` reminder issue
+tracks the date). The license is MIT.
 
 The exported API mirrors the C API: `mdbx_env_*`, `mdbx_txn_*`, and bare
 `mdbx_get`/`mdbx_put`/ `mdbx_del`. After adding a `[[cpp11::register]]`
@@ -39,15 +47,18 @@ drowned in its after-fork hook. Never add an entry point that reaches
 `handle->env` without going through `env_from_sexp()` /
 `txn_from_sexp()`.
 
-The real content of this repo is
-[.agents/design.md](https://pedrobtz.github.io/mdbx/dev/.agents/design.md)
-— a ~1300-line spec that is the authoritative architecture. Read the
-relevant section of it before implementing anything.
+`.agents/` holds three documents, and nothing in them repeats what the
+code already says.
 [.agents/roadmap.md](https://pedrobtz.github.io/mdbx/dev/.agents/roadmap.md)
-is the staged plan to 0.1.0 — check which stage is current before
-starting work, and respect what it defers to 0.2.
-[.agents/notes.md](https://pedrobtz.github.io/mdbx/dev/.agents/notes.md)
-holds upstream reference links.
+is the staged plan through 0.1.0 with the per-stage findings, the
+feature gap against `clibmdbx` ranked by cost, the *Open questions*
+table, and the upstream reference links — start here, and respect what
+it defers to 0.2.
+[.agents/design.md](https://pedrobtz.github.io/mdbx/dev/.agents/design.md)
+records **why** each API question was answered the way it was, including
+the four still open; read the relevant decision before revisiting one.
+[.agents/vendoring.md](https://pedrobtz.github.io/mdbx/dev/.agents/vendoring.md)
+covers the pin, the build flags and the patch series.
 
 `AGENTS.md` is a symlink to this file. `.agents/`, `AGENTS.md`,
 `CLAUDE.md`, `tools/`, `docs/` and `_pkgdown.yml` are all in
@@ -71,8 +82,15 @@ R CMD INSTALL --preclean .                          # exercise src/Makevars dire
 `devtools`, `roxygen2`, `testthat`, `pkgbuild`, and `rcmdcheck` are
 installed against R 4.6. CI
 ([.github/workflows/R-CMD-check.yaml](https://pedrobtz.github.io/mdbx/dev/.github/workflows/R-CMD-check.yaml))
-runs `R CMD check` on macOS, Windows, and Ubuntu
-(devel/release/oldrel-1).
+is a caller of `pedrobtz/r-actions/.github/workflows/r-cmd-check.yml`,
+which runs `R CMD check --as-cran` in two jobs: `runners` on macOS,
+Windows and Ubuntu (release/oldrel-1), and `containers` in the two R-hub
+images matching CRAN’s r-devel Linux flavors — `ubuntu-clang` (clang 23,
+C built as `-std=gnu23`) and `ubuntu-gcc16`. Both fail on a WARNING. The
+container half is the leg that would have caught the C23 keyword-macro
+warnings before CRAN did; no GitHub runner is that combination. There is
+deliberately no R-devel Ubuntu row, because the containers are R-devel
+on Linux already, on the compilers CRAN actually uses.
 
 Tests live in `tests/testthat/`: `test-env.R`, `test-txn.R`,
 `test-data.R`, `test-stat.R`, `test-scan.R`, `test-flags.R`,
@@ -97,7 +115,7 @@ Expected `src/Makevars`:
 
 ``` make
 PKG_CPPFLAGS = -Ivendor/libmdbx -D__dll_export= -DMDBX_BUILD_FLAGS='"R-CMD-SHLIB"' \
-               -DMDBX_ENV_CHECKPID=1 -DMDBX_TXN_CHECKOWNER=1
+               -DMDBX_ENV_CHECKPID=1 -DMDBX_TXN_CHECKOWNER=1 -DMDBX_UNALIGNED_OK=0
 PKG_LIBS = -pthread
 # cpp11.o is generated; mdbx.c compiles as C, the rest as C++. R only globs src/
 # itself, so every object is listed -- keep this in sync when adding a source file.
@@ -114,6 +132,9 @@ the package DLL alongside the registered routines. `MDBX_ENV_CHECKPID` /
 misuse — important because
 [`parallel::mclapply()`](https://rdrr.io/r/parallel/mclapply.html),
 `future`, and `callr` can carry an open environment across a `fork()`.
+`MDBX_UNALIGNED_OK=0` keeps libmdbx from dereferencing misaligned
+pointers, which CRAN’s UBSAN flavors reported against 0.1.0 — never
+relax UBSan’s alignment check in CI to get past one of these again.
 
 Do **not** set `-O3`, `-flto`, or visibility flags in `Makevars`: CRAN
 forbids packages overriding R’s own optimization flags. Leave `CFLAGS`
@@ -213,15 +234,20 @@ follows one of them:
 
 ## The vendor tree is patched
 
-`src/vendor/libmdbx/` is **not** pristine. Four patches in
+`src/vendor/libmdbx/` is **not** pristine. Six patches in
 `tools/patches/` route libmdbx’s panic and logging through R’s API, drop
-nine `#pragma diagnostic ignored` lines, and sidestep a false-positive
-`-Warray-bounds` from Rtools’ MinGW headers. They are applied **by the
-maintainer during a version bump**, never at build time —
-`tools/update-libmdbx.sh` re-vendors and replays the series. Never
-hand-edit the vendored sources: add or change a patch, regenerate, and
-update the post-patch digests in `tools/patches/README.md`.
-`.agents/patch.md` carries the narrative.
+nine `#pragma diagnostic ignored` lines, sidestep a false-positive
+`-Warray-bounds` from Rtools’ MinGW headers, keep the pre-C23
+`bool`/`nullptr` macros from shadowing the C23 keywords, and turn three
+trailing-array struct hacks into forms gcc’s `-fsanitize=bounds-strict`
+accepts. They are applied **by the maintainer during a version bump**,
+never at build time — `tools/update-libmdbx.sh` re-vendors and replays
+the series. Never hand-edit the vendored sources: add or change a patch,
+regenerate, and update the post-patch digests in
+`tools/patches/README.md`. The *Local patches* section of
+[.agents/vendoring.md](https://pedrobtz.github.io/mdbx/dev/.agents/vendoring.md)
+carries the narrative — what each patch does, and which alternatives
+were rejected.
 
 ## Licensing
 
@@ -234,19 +260,30 @@ procedure.
 
 ## Scope
 
-v0.1 is deliberately small: vendored build, env open/close, read/write
-transactions, raw get/put/delete, commit/abort, external-pointer
-lifecycle, basic stat/info, routine registration, three-platform builds,
-lifecycle tests. Named databases, cursors, iteration, batch APIs, and
-serialization are phase two.
+0.1.0 shipped: the vendored build, env open/close with flags and
+geometry, read/write transactions, get/put/delete, named databases with
+per-database stat, listing, dropping and sequences, ordered and
+resumable key/item scans, stat/info/limits, routine registration,
+three-platform builds, and the lifecycle, fork and panic tests.
+**Cursors, batch entry points (`mdbx_get_many()` and friends), duplicate
+keys (`DUPSORT`), and serialization are 0.2** — see the *Feature gap
+against `clibmdbx`* section of
+[.agents/roadmap.md](https://pedrobtz.github.io/mdbx/dev/.agents/roadmap.md),
+which ranks them by implementation cost.
 
-Keys and values are **raw only** (no character auto-encoding) and a
-missing key reads as `NULL` — both settled in Stage 4, following
-`clibmdbx`. Durability was settled in Stage 5.6, also following
+Storage is bytes; a missing key reads as `NULL`. Keys and values go in
+as a raw vector or a single string stored as UTF-8, and come back
+decoded as text unless `as = "raw"` — settled in Stage 4, following
+`clibmdbx`. Serialization of R objects is deliberately *not* the engine
+layer’s job. Durability was settled in Stage 5.6, also following
 `clibmdbx`: flags pass through by name (`flags = c("SAFE_NOSYNC", ...)`)
 rather than through a curated enum, and nothing is relaxed by default.
-Four API questions remain open and should not be settled unilaterally —
-where serialization lives, how much of the cursor API to expose,
-database handle representation, and map resizing. See
-`## Open Design Decisions` in
-[.agents/design.md](https://pedrobtz.github.io/mdbx/dev/.agents/design.md).
+Database handle representation was settled in Stage 8 — a name
+re-resolved per transaction, never cached across one, because an aborted
+transaction poisons a `MDBX_dbi`.
+
+Four questions remain open and should not be settled unilaterally: where
+serialization lives, how much of the cursor API to expose, map resizing,
+and the on-disk layout beyond the `subdir` default.
+[.agents/design.md](https://pedrobtz.github.io/mdbx/dev/.agents/design.md)
+has the reasoning for each.

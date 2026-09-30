@@ -13,7 +13,7 @@ in separate transactions can never be handed the same number."><meta name="robot
 
     <a class="navbar-brand me-2" href="../index.html">mdbx</a>
 
-    <small class="nav-text text-danger me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="In-development version">0.0.9000</small>
+    <small class="nav-text text-danger me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="In-development version">0.1.1.9000</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -26,6 +26,7 @@ in separate transactions can never be handed the same number."><meta name="robot
 <li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="../articles/cache.html">Designing a disk cache on mdbx</a></li>
+    <li><a class="dropdown-item" href="../articles/workflow.html">A worked example, end to end</a></li>
   </ul></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
       </ul><ul class="navbar-nav"><li class="nav-item"><form class="form-inline" role="search">
@@ -40,7 +41,7 @@ in separate transactions can never be handed the same number."><meta name="robot
   <main id="main" class="col-md-9"><div class="page-header">
 
       <h1>A database's sequence counter</h1>
-      <small class="dont-index">Source: <a href="https://github.com/pedrobtz/mdbx/blob/develop/R/dbi.R" class="external-link"><code>R/dbi.R</code></a></small>
+      <small class="dont-index">Source: <a href="https://github.com/pedrobtz/mdbx/blob/main/R/dbi.R" class="external-link"><code>R/dbi.R</code></a></small>
       <div class="d-none name"><code>mdbx_dbi_sequence.Rd</code></div>
     </div>
 
@@ -62,7 +63,8 @@ in separate transactions can never be handed the same number.</p>
 
 <dl><dt id="arg-txn">txn<a class="anchor" aria-label="anchor" href="#arg-txn"></a></dt>
 <dd><p>An <code>mdbx_txn</code> object from <code><a href="mdbx_txn_begin.html">mdbx_txn_begin()</a></code>. Incrementing needs a
-write transaction; reading does not.</p></dd>
+write transaction and is refused in a read one; reading the counter —
+<code>increment = 0</code> — works in either.</p></dd>
 
 
 <dt id="arg-db">db<a class="anchor" aria-label="anchor" href="#arg-db"></a></dt>
@@ -85,7 +87,9 @@ counter without changing it.</p></dd>
 order, of the kind a cache uses to evict what was stored longest ago. Encode
 the result big-endian if it is going to be a key, so that byte order matches
 numeric order.</p>
-<p>Like every other write, an increment only stands if the transaction commits.</p>
+<p>Like every other write, an increment only stands if the transaction commits.
+Emptying or deleting the database can reset the counter to zero — see
+<code><a href="mdbx_dbi_drop.html">mdbx_dbi_drop()</a></code>.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>

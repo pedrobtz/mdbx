@@ -75,7 +75,7 @@ env <- mdbx_env_open(path)
 
 txn <- mdbx_txn_begin(env)
 txn
-#> <mdbx_txn> /tmp/RtmpNTEo83/file1c601a0bb3f4.mdbx 
+#> <mdbx_txn> /tmp/Rtmpf35Bvt/file1ab0208536e0.mdbx 
 #>   mode:  read-only 
 #>   state: active 
 mdbx_txn_abort(txn)

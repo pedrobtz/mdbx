@@ -74,6 +74,8 @@ report on a database and on the bundled library.
 
 Useful links:
 
+- <https://pedrobtz.github.io/mdbx/>
+
 - <https://github.com/pedrobtz/mdbx>
 
 - Report bugs at <https://github.com/pedrobtz/mdbx/issues>
