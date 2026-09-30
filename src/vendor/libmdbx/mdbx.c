@@ -911,8 +911,13 @@ struct dpl {
   /* allocated size excluding the dpl_reserve_gap */
   size_t detent;
   /* dynamic size with holes at zero and after the last */
-  dp_t items[dpl_reserve_gap];
+  /* R package patch: a true flexible array member, not [dpl_reserve_gap], so
+   * -fsanitize=bounds-strict accepts indexing past the gap. See tools/patches. */
+  dp_t items[];
 };
+/* Bytes ahead of the first usable item: the header plus the reserved gap,
+ * i.e. what sizeof(dpl_t) measured when the gap was the declared array. */
+#define dpl_header_size (sizeof(dpl_t) + dpl_reserve_gap * sizeof(dp_t))
 
 /*----------------------------------------------------------------------------*/
 /* Internal structures */
@@ -3315,8 +3320,12 @@ typedef struct defrag_arc {
 typedef struct defrag_map_list {
   size_t length;
   size_t limit;
-  da_t items[1];
+  /* R package patch: a true flexible array member, not [1], so
+   * -fsanitize=bounds-strict accepts indexing past it. See tools/patches. */
+  da_t items[];
 } dml_t;
+/* What sizeof(dml_t) measured when the array was declared [1]. */
+#define dml_header_size (sizeof(dml_t) + sizeof(da_t))
 
 MDBX_MAYBE_UNUSED MDBX_INTERNAL dml_t *dml_alloc(size_t size);
 MDBX_MAYBE_UNUSED MDBX_INTERNAL void dml_sort(dml_t *);
@@ -19434,18 +19443,18 @@ static inline size_t dml_size2bytes(ptrdiff_t size) {
 #if MDBX_DML_PREALLOC_FOR_RADIXSORT
   size += size;
 #endif /* MDBX_DML_PREALLOC_FOR_RADIXSORT */
-  STATIC_ASSERT(MDBX_ASSUME_MALLOC_OVERHEAD + sizeof(dml_t) +
+  STATIC_ASSERT(MDBX_ASSUME_MALLOC_OVERHEAD + dml_header_size +
                     (PAGELIST_LIMIT * (MDBX_DML_PREALLOC_FOR_RADIXSORT + 1)) * sizeof(da_t) +
                     MDBX_PNL_GRANULATE * sizeof(void *) * 2 <
                 SIZE_MAX / 4 * 3);
-  size_t bytes = ceil_powerof2(MDBX_ASSUME_MALLOC_OVERHEAD + sizeof(dml_t) + size * sizeof(da_t),
+  size_t bytes = ceil_powerof2(MDBX_ASSUME_MALLOC_OVERHEAD + dml_header_size + size * sizeof(da_t),
                                MDBX_PNL_GRANULATE * sizeof(void *) * 2) -
                  MDBX_ASSUME_MALLOC_OVERHEAD;
   return bytes;
 }
 
 static inline size_t dml_bytes2size(const ptrdiff_t bytes) {
-  size_t size = (bytes - sizeof(dml_t)) / sizeof(da_t);
+  size_t size = (bytes - dml_header_size) / sizeof(da_t);
 #if MDBX_DML_PREALLOC_FOR_RADIXSORT
   size >>= 1;
 #endif /* MDBX_DML_PREALLOC_FOR_RADIXSORT */
@@ -19549,18 +19558,18 @@ static inline size_t dpl_size2bytes(ptrdiff_t size) {
 #if MDBX_DPL_PREALLOC_FOR_RADIXSORT
   size += size;
 #endif /* MDBX_DPL_PREALLOC_FOR_RADIXSORT */
-  STATIC_ASSERT(MDBX_ASSUME_MALLOC_OVERHEAD + sizeof(dpl_t) +
+  STATIC_ASSERT(MDBX_ASSUME_MALLOC_OVERHEAD + dpl_header_size +
                     (PAGELIST_LIMIT * (MDBX_DPL_PREALLOC_FOR_RADIXSORT + 1)) * sizeof(dp_t) +
                     MDBX_PNL_GRANULATE * sizeof(void *) * 2 <
                 SIZE_MAX / 4 * 3);
-  size_t bytes = ceil_powerof2(MDBX_ASSUME_MALLOC_OVERHEAD + sizeof(dpl_t) + size * sizeof(dp_t),
+  size_t bytes = ceil_powerof2(MDBX_ASSUME_MALLOC_OVERHEAD + dpl_header_size + size * sizeof(dp_t),
                                MDBX_PNL_GRANULATE * sizeof(void *) * 2) -
                  MDBX_ASSUME_MALLOC_OVERHEAD;
   return bytes;
 }
 
 static inline size_t dpl_bytes2size(const ptrdiff_t bytes) {
-  size_t size = (bytes - sizeof(dpl_t)) / sizeof(dp_t);
+  size_t size = (bytes - dpl_header_size) / sizeof(dp_t);
 #if MDBX_DPL_PREALLOC_FOR_RADIXSORT
   size >>= 1;
 #endif /* MDBX_DPL_PREALLOC_FOR_RADIXSORT */
@@ -30150,20 +30159,20 @@ int osal_ioring_add(osal_ioring_t *ior, const size_t offset, void *data, const s
         likely(ior_last_bytes(ior, item) + bytes <= MAX_IO_BYTES)) {
 #if IS_WINDOWS
       if (use_gather &&
-          ((bytes | (uintptr_t)data | ior->last_bytes | (uintptr_t)(uint64_t)item->sgv[0].Buffer) &
+          ((bytes | (uintptr_t)data | ior->last_bytes | (uintptr_t)(uint64_t)ior_sgv(item)[0].Buffer) &
            ior_alignment_mask) == 0 &&
           ior->last_sgvcnt + (size_t)segments < OSAL_IOV_MAX) {
         ASSERT(ior->overlapped_fd);
         ASSERT((item->single.iov_len & ior_WriteFile_flag) == 0);
-        ASSERT(item->sgv[ior->last_sgvcnt].Buffer == 0);
+        ASSERT(ior_sgv(item)[ior->last_sgvcnt].Buffer == 0);
         ior->last_bytes += bytes;
         size_t i = 0;
         do {
-          item->sgv[ior->last_sgvcnt + i].Buffer = PtrToPtr64(data);
+          ior_sgv(item)[ior->last_sgvcnt + i].Buffer = PtrToPtr64(data);
           data = ptr_disp(data, ior->pagesize);
         } while (++i < segments);
         ior->slots_left -= segments;
-        item->sgv[ior->last_sgvcnt += segments].Buffer = 0;
+        ior_sgv(item)[ior->last_sgvcnt += segments].Buffer = 0;
         ASSERT((item->single.iov_len & ior_WriteFile_flag) == 0);
         return MDBX_SUCCESS;
       }
@@ -30175,17 +30184,17 @@ int osal_ioring_add(osal_ioring_t *ior, const size_t offset, void *data, const s
       }
 #elif MDBX_HAVE_PWRITEV
       ASSERT((int)item->sgvcnt > 0);
-      const void *end = ptr_disp(item->sgv[item->sgvcnt - 1].iov_base, item->sgv[item->sgvcnt - 1].iov_len);
+      const void *end = ptr_disp(ior_sgv(item)[item->sgvcnt - 1].iov_base, ior_sgv(item)[item->sgvcnt - 1].iov_len);
       if (unlikely(end == data)) {
-        item->sgv[item->sgvcnt - 1].iov_len += bytes;
+        ior_sgv(item)[item->sgvcnt - 1].iov_len += bytes;
         ior->last_bytes += bytes;
         return MDBX_SUCCESS;
       }
       if (likely(item->sgvcnt < OSAL_IOV_MAX)) {
         if (unlikely(ior->slots_left < 1))
           return MDBX_RESULT_TRUE;
-        item->sgv[item->sgvcnt].iov_base = data;
-        item->sgv[item->sgvcnt].iov_len = bytes;
+        ior_sgv(item)[item->sgvcnt].iov_base = data;
+        ior_sgv(item)[item->sgvcnt].iov_len = bytes;
         ior->last_bytes += bytes;
         item->sgvcnt += 1;
         ior->slots_left -= 1;
@@ -30225,20 +30234,20 @@ int osal_ioring_add(osal_ioring_t *ior, const size_t offset, void *data, const s
      * Decoders subtract ior_WriteFile_flag from iov_len and test the low bit:
      *   0 - 1 => SIZE_MAX, low bit set, therefore recognized as gather item. */
     ASSERT(ior->overlapped_fd);
-    item->sgv[0].Buffer = PtrToPtr64(data);
+    ior_sgv(item)[0].Buffer = PtrToPtr64(data);
     for (size_t i = 1; i < segments; ++i) {
       data = ptr_disp(data, ior->pagesize);
-      item->sgv[i].Buffer = PtrToPtr64(data);
+      ior_sgv(item)[i].Buffer = PtrToPtr64(data);
     }
-    item->sgv[slots_used = segments].Buffer = 0;
+    ior_sgv(item)[slots_used = segments].Buffer = 0;
     ASSERT((item->single.iov_len & ior_WriteFile_flag) == 0);
   }
   ior->last_bytes = bytes;
   ior_last_sgvcnt(ior, item) = slots_used;
 #elif MDBX_HAVE_PWRITEV
   item->offset = offset;
-  item->sgv[0].iov_base = data;
-  item->sgv[0].iov_len = bytes;
+  ior_sgv(item)[0].iov_base = data;
+  ior_sgv(item)[0].iov_len = bytes;
   ior->last_bytes = bytes;
   ior_last_sgvcnt(ior, item) = slots_used;
 #else
@@ -30265,15 +30274,15 @@ void osal_ioring_walk(osal_ioring_t *ior, iov_ctx_t *ctx,
     size_t bytes = item->single.iov_len - ior_WriteFile_flag;
     size_t i = 1;
     if (bytes & ior_WriteFile_flag) {
-      data = Ptr64ToPtr(item->sgv[0].Buffer);
+      data = Ptr64ToPtr(ior_sgv(item)[0].Buffer);
       bytes = ior->pagesize;
       /* Zap: Reading invalid data from 'item->sgv' */
       MDBX_SUPPRESS_GOOFY_MSVC_ANALYZER(6385);
-      while (item->sgv[i].Buffer) {
-        if (data + ior->pagesize != item->sgv[i].Buffer) {
+      while (ior_sgv(item)[i].Buffer) {
+        if (data + ior->pagesize != ior_sgv(item)[i].Buffer) {
           callback(ctx, offset, data, bytes);
           offset += bytes;
-          data = Ptr64ToPtr(item->sgv[i].Buffer);
+          data = Ptr64ToPtr(ior_sgv(item)[i].Buffer);
           bytes = 0;
         }
         bytes += ior->pagesize;
@@ -30287,8 +30296,8 @@ void osal_ioring_walk(osal_ioring_t *ior, iov_ctx_t *ctx,
     size_t offset = item->offset;
     size_t i = 0;
     do {
-      callback(ctx, offset, item->sgv[i].iov_base, item->sgv[i].iov_len);
-      offset += item->sgv[i].iov_len;
+      callback(ctx, offset, ior_sgv(item)[i].iov_base, ior_sgv(item)[i].iov_len);
+      offset += ior_sgv(item)[i].iov_len;
     } while (++i != item->sgvcnt);
 #else
     const size_t i = 1;
@@ -30315,7 +30324,7 @@ osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, mdbx_filehandle
       bytes = ior->pagesize;
       /* Zap: Reading invalid data from 'item->sgv' */
       MDBX_SUPPRESS_GOOFY_MSVC_ANALYZER(6385);
-      while (item->sgv[i].Buffer) {
+      while (ior_sgv(item)[i].Buffer) {
         bytes += ior->pagesize;
         ++i;
       }
@@ -30336,7 +30345,7 @@ osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, mdbx_filehandle
       } else {
         r.err = (int)GetLastError();
         if (unlikely(r.err != ERROR_IO_PENDING)) {
-          void *data = Ptr64ToPtr(item->sgv[0].Buffer);
+          void *data = Ptr64ToPtr(ior_sgv(item)[0].Buffer);
           ERROR("%s: fd %p, item %p (%zu), addr %p pgno %u, bytes %zu,"
                 " offset %" PRId64 ", err %d",
                 "WriteFileGather", fd, __Wpedantic_format_voidptr(item), item - ior->pool, data, ((page_t *)data)->pgno,
@@ -30441,11 +30450,11 @@ osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, mdbx_filehandle
       size_t i = 1, bytes = item->single.iov_len - ior_WriteFile_flag;
       void *data = item->single.iov_base;
       if (bytes & ior_WriteFile_flag) {
-        data = Ptr64ToPtr(item->sgv[0].Buffer);
+        data = Ptr64ToPtr(ior_sgv(item)[0].Buffer);
         bytes = ior->pagesize;
         /* Zap: Reading invalid data from 'item->sgv' */
         MDBX_SUPPRESS_GOOFY_MSVC_ANALYZER(6385);
-        while (item->sgv[i].Buffer) {
+        while (ior_sgv(item)[i].Buffer) {
           bytes += ior->pagesize;
           ++i;
         }
@@ -30495,7 +30504,7 @@ osal_ioring_write_result_t osal_ioring_write(osal_ioring_t *ior, mdbx_filehandle
 #if MDBX_HAVE_PWRITEV
     ASSERT(item->sgvcnt > 0);
     if (item->sgvcnt == 1)
-      r.err = osal_pwrite(fd, item->sgv[0].iov_base, item->sgv[0].iov_len, item->offset);
+      r.err = osal_pwrite(fd, ior_sgv(item)[0].iov_base, ior_sgv(item)[0].iov_len, item->offset);
     else
       r.err = osal_pwritev(fd, item->sgv, item->sgvcnt, item->offset);
 
@@ -30533,7 +30542,7 @@ void osal_ioring_reset(osal_ioring_t *ior) {
       if ((item->single.iov_len & ior_WriteFile_flag) == 0) {
         /* Zap: Reading invalid data from 'item->sgv' */
         MDBX_SUPPRESS_GOOFY_MSVC_ANALYZER(6385);
-        while (item->sgv[i].Buffer)
+        while (ior_sgv(item)[i].Buffer)
           ++i;
       }
       item = ior_next(item, i);

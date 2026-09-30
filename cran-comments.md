@@ -1,70 +1,54 @@
+## Update submission
+
+This update fixes the issues reported for mdbx 0.1.0 under "Additional issues"
+on the CRAN check page (clang-UBSAN and gcc-UBSAN), and in the M1-SAN results
+for macOS arm64. All of them are in the bundled 'libmdbx' sources.
+
+https://cran.r-project.org/web/checks/check_results_mdbx.html
+
+This responds to Prof. Ripley's two emails of 2026-09-28, which asked for
+these problems to be corrected before 2026-10-19. That is why this update
+follows the acceptance of 0.1.0 so closely.
+
+* Misaligned loads and stores (`mdbx.c:597`, `627`, `647`, `664`, `685`, `701`,
+  and `224` via `fetch_txnid`). 'libmdbx' decides at compile time whether to
+  dereference misaligned integer pointers directly, and enables that on x86-64
+  and arm64. It is now built with `-DMDBX_UNALIGNED_OK=0`, the library's own
+  switch for its byte-copy paths. This is set in `src/Makevars`. It also
+  covers M1-SAN's `mdbx.c:597`, `627` and `647`: on arm64 only the 16- and
+  32-bit accesses were direct, which is why M1-SAN reported fewer sites.
+
+* `index 1 out of bounds for type 'iovec [1]'` (`mdbx.c:30178` and nearby,
+  gcc only). 'libmdbx' allocates some structures larger than they are declared
+  and indexes past the declared trailing array, which `-fsanitize=bounds-strict`
+  reports. The same pattern in two other structures, not reached by the
+  package's tests, is fixed too. They are now C99 flexible array members, or
+  are indexed through a pointer. Allocation sizes are unchanged. This is a new
+  local patch to the bundled sources, and `inst/COPYRIGHTS` now describes it.
+
+* The `test-process.R` failures (six in each Linux log, one in the M1-SAN
+  log) were a consequence of the first item. Those tests capture a child
+  `Rscript`'s output, and the UBSAN diagnostics printed by the child ended up
+  in that output. With the diagnostics gone, the tests pass.
+
+I reproduced all three reports locally at the flags in the memtests and
+M1-SAN READMEs.
+
+* clang: `-fsanitize=undefined -fno-sanitize=function`, against the full test
+  suite. 0.1.0 gives the same five sites and the same 6 failures / 982 passes
+  as the clang-UBSAN log. 0.1.1 gives no UBSAN diagnostics and 988 passes.
+* gcc 16: `-fsanitize=address,undefined,bounds-strict`, against a stand-alone
+  driver of the bundled library. With 0.1.1 it gives no diagnostics.
+* Apple clang 21 on arm64: `-fsanitize=address,undefined`, the M1-SAN flags,
+  against the full test suite. 0.1.0 gives the same three sites and the same
+  1 failure / 987 passes as the M1-SAN log. 0.1.1 gives no diagnostics and
+  988 passes. ASan's runtime was loaded with the package rather than
+  preloaded, so its heap checks were inactive in that run; CI's `clang-asan`
+  and `gcc-asan` containers ran with them active, with no findings.
+
+The package's CI now runs UBSan with no checks disabled, plus the R-hub
+`clang-asan` and `gcc-asan` containers.
+
 ## R CMD check results
 
-0 errors | 0 warnings | 1 note
-
-The note is "New submission".
-
-## Resubmission
-
-This is a resubmission, addressing the WARNING reported by the incoming
-pretest on the Debian clang-23 leg:
-
-    vendor/libmdbx/mdbx.h:417:9: warning: keyword is hidden by macro definition [-Wkeyword-macro]
-    vendor/libmdbx/mdbx.h:420:9: warning: keyword is hidden by macro definition [-Wkeyword-macro]
-    vendor/libmdbx/mdbx.h:423:9: warning: keyword is hidden by macro definition [-Wkeyword-macro]
-    vendor/libmdbx/mdbx-internals.h:361:9: warning: keyword is hidden by macro definition [-Wkeyword-macro]
-
-The bundled 'libmdbx' sources define `bool`, `true`, `false` and `nullptr` for
-C compilers that do not provide them, behind `#ifndef bool` and
-`!defined(nullptr)` guards. C23 promotes all four to keywords, and a keyword is
-not a macro, so those guards remain true and the macros shadow the keywords.
-Each guard now also tests `__STDC_VERSION__ < 202311L`, so the definitions
-apply only where the compiler does not supply the keyword itself.
-
-That is a change to the bundled sources, and it is behaviour-neutral:
-`clang -S -O2` of `mdbx.c` against the patched and unpatched headers is
-byte-identical under both `-std=gnu17`, where the macros survive, and
-`-std=gnu23`, where they now give way to the keywords -- apart from the
-`__TIME__` stamp 'libmdbx' embeds in its build string. It is recorded as a
-fifth local patch and described in `inst/COPYRIGHTS`.
-
-The two changes below were in the previous submission, which did not get past
-the pretest, and are unchanged.
-
-In response to the reviewer's comment:
-
-* `\value` was missing from `man/mdbx_scan_max.Rd`. It is now documented:
-  `mdbx_scan_max` is exported data rather than a function, and the tag states
-  the class and length of the object (a length-one numeric vector), its value,
-  and what that value governs -- the number of records above which `mdbx_keys()`
-  and `mdbx_items()` refuse a scan that was given no `limit`.
-
-  Every other exported function already carried `\value`. The two remaining
-  topics without one, `?mdbx-concurrency` and `?mdbx-errors`, document concepts
-  rather than objects: neither has a `\usage` section and neither is callable.
-
-That submission also carried one bug fix, in `mdbx_dbi_drop()`. Emptying the
-unnamed main database destroyed every named database in the environment,
-silently and irreversibly, because 'libmdbx' stores each named database as a
-record inside the main one and purges the whole tree. A caller following the
-documentation ("removes every record but keeps the database") could lose data,
-so the operation is now refused while any named database exists. The related
-case of `delete = TRUE` on the main database, which 'libmdbx' accepts and
-ignores while reporting success, is refused as well. Both are covered by new
-tests.
-
-## Notes for the reviewer
-
-This is a new submission.
-
-The package bundles the amalgamated sources of 'libmdbx' (Apache-2.0) under
-`src/vendor/libmdbx/`, compiled into the package's own shared object. There is
-no system library, submodule, or CMake step. The bundled sources carry five
-local patches: four route the library's panic and logging paths through R's
-API so that an internal assertion cannot terminate the R session, remove
-upstream's diagnostic-suppression pragmas, and avoid a false-positive
--Warray-bounds from Rtools' MinGW headers; the fifth is the C23 fix described
-above. Both the bundling and the modifications are declared in
-`inst/COPYRIGHTS`, which is the Apache-2.0 section 4(b) notice, and the
-upstream `LICENSE` and `NOTICE` files ship alongside the sources. Copyright holders for the bundled code are listed
-in `Authors@R`.
+0 errors | 0 warnings | 0 notes

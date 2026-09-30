@@ -1,5 +1,19 @@
 # mdbx (development version)
 
+# mdbx 0.1.1
+
+CRAN release: 2026-09-28.
+
+* Fixes the undefined behaviour CRAN's clang-UBSAN and gcc-UBSAN checks
+  reported in the bundled 'libmdbx' sources. 'libmdbx' read and wrote 16-, 32-
+  and 64-bit values through misaligned pointers on x86-64 and arm64; it is now
+  built with `MDBX_UNALIGNED_OK=0`, which routes those accesses through byte
+  copies. Three internal structures that 'libmdbx' deliberately indexes past
+  their declared length are now C99 flexible array members, or are indexed
+  through a pointer, so gcc's `-fsanitize=bounds-strict` no longer reports
+  them. Nothing observable changes: on-disk format, allocation sizes and
+  results are identical.
+
 # mdbx 0.1.0
 
 CRAN release: 2026-09-27.

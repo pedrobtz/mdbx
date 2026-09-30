@@ -469,8 +469,9 @@ can outlive its own validity.
 
 - [x] `R CMD check --as-cran` clean on all five CI legs, plus sanitizers, valgrind, LTO,
       gctorture and rchk. All green at `e80a18a`.
-- [x] Run under ASan/UBSan and valgrind. Disable UBSan's alignment check — libmdbx deliberately
-      uses unaligned x86 loads/stores. `.github/workflows/native-checks.yaml`.
+- [x] Run under ASan/UBSan and valgrind. `.github/workflows/native-checks.yaml`. (0.1.0 shipped
+      with UBSan's alignment check disabled; CRAN's UBSAN flavors then reported it. Fixed in 0.1.1
+      — see *Native checks in CI* below.)
 - [x] Run `rchk` for protection errors — same workflow.
 - [x] Interoperability spot-check: write with R, read with another MDBX implementation, and the
       reverse. `tools/interop-check.sh`.
@@ -483,23 +484,20 @@ can outlive its own validity.
 
 ### Native checks in CI
 
-`.github/workflows/native-checks.yaml` runs sanitizers, valgrind, LTO, gctorture and rchk. Four of
-the five call the reusable workflows in `pedrobtz/r-actions@v1` directly; sanitizers is a local copy,
-for two reasons that the reusable workflow cannot express (it declares `workflow_call` with no
-`inputs`):
+`.github/workflows/native-checks.yaml` runs sanitizers, valgrind, LTO, gctorture and rchk, all five
+through the reusable workflows in `pedrobtz/r-actions@v1`. The sanitizer leg is
+`sanitizers.yml` with `asan: true`: clang UBSan on a runner with `halt_on_error=1`, plus the R-hub
+`clang-asan` and `gcc-asan` containers, which are CRAN's two sanitizer flavors.
 
-- **UBSan alignment has to be off for the vendored code.** Confirmed rather than assumed: one site,
-  `unaligned_poke_u32` at `mdbx.c:647`, a plain `*(uint32_t *)ptr = v` that libmdbx gates on its own
-  compile-time `MDBX_UNALIGNED_OK`. `-fno-sanitize=alignment` goes in `CFLAGS` only — and
-  `vendor/libmdbx/mdbx.c` is the only C file in the package, so that relaxes exactly the
-  amalgamation and leaves all four first-party C++ sources fully checked. Verified locally: the flag
-  lands on that file alone, and the suite then runs 372/372 with zero UBSan diagnostics.
-- **`halt_on_error=1` in `UBSAN_OPTIONS`.** UBSan's default is to print and continue, so `R CMD
-  check` would pass with sanitizer errors buried in the test log; ASan aborts by default and UBSan
-  does not. Without this the leg cannot fail.
-
-Both would fold back into a plain `uses:` if `r-actions/sanitizers.yml` gained `extra_cflags` and
-`ubsan_options` inputs.
+**It was a local copy until 0.1.1, and that copy is why CRAN found what CI did not.** It set
+`-fno-sanitize=alignment` on `CFLAGS` to silence libmdbx's deliberate misaligned accesses — found
+at one site (`unaligned_poke_u32`, `mdbx.c:647`) and judged benign — and it ran clang alone, so
+gcc's `bounds-strict` never ran. CRAN's clang-UBSAN and gcc-UBSAN runs against 0.1.0 reported
+both classes, and the misaligned reads leaked into `test-process.R`'s captured child output as six
+failures. Both are now fixed at the source rather than relaxed in CI: `-DMDBX_UNALIGNED_OK=0` in
+`src/Makevars`, and `tools/patches/0006`. See *Build flags* and *Patch 6* in
+[vendoring.md](vendoring.md). The lesson: a sanitizer opt-out is a claim about every future code
+path, not about the one site that was measured — five sites fired on CRAN, not one.
 
 **gctorture is the slow leg.** The full suite under `gctorture2(step = 20)` takes about 13 minutes
 on an M-series Mac; `r-actions/gctorture.yml` allows 60, and GitHub runners are perhaps 2-3x slower,
@@ -695,8 +693,9 @@ and is not the tag commit — worth knowing before mistaking it for a mismatch.
 
 ### CRAN submission
 
-0.1.0 took three uploads and was accepted on 27 September 2026. The record is worth keeping
-because both rejections are the kind the whole portfolio can pre-empt:
+0.1.0 took three uploads and was accepted on 27 September 2026, and 0.1.1 followed the next day
+to fix what CRAN's sanitizer checks then found. The record is worth keeping because every
+rejection and report below is the kind the whole portfolio can pre-empt:
 
 - **3 September, first upload.** Passed the pretest and sat in the queue for nine days. The
   reviewer's one ask, on 12 September, was `\value` for every exported topic, describing the class
@@ -710,11 +709,19 @@ because both rejections are the kind the whole portfolio can pre-empt:
   patch, and the `ubuntu-clang` container leg was added to CI because no GitHub runner is that
   compiler/standard combination.
 - **16 September, third upload.** Passed the pretest, waited eleven days for the human review, and
-  was accepted without further comment.
+  was accepted without further comment. Published 27 September.
+- **28 September, 0.1.1.** With 0.1.0 live, CRAN's *Additional issues* reported clang-UBSAN and
+  gcc-UBSAN failures, and the M1-SAN results the same misaligned accesses on arm64, all in the
+  bundled libmdbx. Prof. Ripley asked for a fix before 19 October. It went the same day:
+  `-DMDBX_UNALIGNED_OK=0` for the misaligned loads and stores, and `tools/patches/0006` for gcc's
+  `bounds-strict` reports (see *Native checks in CI*, above, for why CI had not caught either).
+  Uploaded at 12:29 UTC. The pretest repeated the sanitizer reports against 0.1.0, as it does for
+  the last released version, and the update was accepted and published within the hour.
 
-`cran-comments.md` is the text that went with the third upload. The tarball was built from
-`9c34172`, which `CRAN-SUBMISSION` records; `usethis::use_github_release()` reads that file to tag
-the release, so leave it in place until the tag exists.
+Both releases are tagged. `0.1.0` is `9c34172`, the commit `CRAN-SUBMISSION` recorded for the
+third upload. That file is no longer tracked, so `0.1.1` was placed by matching the CRAN tarball
+against the tree file by file: `152edfa`, the head of #21, built seven minutes before that pull
+request was merged. `cran-comments.md` is now the 0.1.1 text.
 
 ---
 

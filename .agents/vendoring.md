@@ -71,6 +71,17 @@ Set in `src/Makevars` and `src/Makevars.win`:
 - `-DMDBX_ENV_CHECKPID=1`, `-DMDBX_TXN_CHECKOWNER=1` — detect cross-process and cross-thread
   misuse. `MDBX_TXN_CHECKOWNER` already defaults to 1, but `MDBX_ENV_CHECKPID` defaults to a
   platform-dependent AUTO, so setting it explicitly is meaningful.
+- `-DMDBX_UNALIGNED_OK=0` — send every unaligned 16/32/64-bit access through libmdbx's byte-copy
+  and split-word paths. Upstream picks 8 on x86-64 and 4 on arm64 and then dereferences
+  misaligned `uint*_t` pointers directly, which is undefined behaviour and is what CRAN's
+  clang-UBSAN and gcc-UBSAN flavors, and the M1-SAN macOS run, reported against 0.1.0 (`unaligned_peek_u16/u32/u64`,
+  `unaligned_poke_u32/u64`, and `atomic_load64` via `fetch_txnid`). libmdbx already defaults to 0
+  under a sanitizer, but only detects one through `__SANITIZE_UNDEFINED__` or `ENABLE_UBSAN`, and
+  CRAN defines neither. At -O2 the byte copies compile back to single loads; the one behavioural
+  difference is that a meta-page txnid is read and written as two 32-bit atomics rather than one
+  64-bit, which is the path upstream already takes on every non-x86 target and which the
+  `txnid_a`/`txnid_b` meta protocol exists to make safe. It stays on the command line rather than
+  in a patch because it is an upstream configuration knob, not a code change.
 
 Windows only, in `src/Makevars.win`:
 
@@ -99,10 +110,11 @@ scripts; either works, but do not mix them.
 
 ## Local patches
 
-The vendored sources are **not pristine**: five patches route libmdbx's panic and logging paths
+The vendored sources are **not pristine**: six patches route libmdbx's panic and logging paths
 through R's API, remove nine diagnostic suppressions, sidestep a false-positive `-Warray-bounds`
-from Rtools' MinGW headers, and stop the pre-C23 `bool`/`nullptr` compatibility macros from
-shadowing the C23 keywords, so that `R CMD check --as-cran` reports no warnings and libmdbx cannot
+from Rtools' MinGW headers, stop the pre-C23 `bool`/`nullptr` compatibility macros from
+shadowing the C23 keywords, and replace three trailing-array struct hacks with forms a
+bounds-checking sanitizer accepts, so that `R CMD check --as-cran` reports no warnings and libmdbx cannot
 terminate the R session. They must be re-applied whenever this pin moves.
 
 **The authoritative record is [../tools/patches/](../tools/patches/)**, which lives in the source
@@ -233,6 +245,46 @@ rejected in patch 4 — Writing R Extensions treats `-Wno-*` as non-portable, an
 WARNING for a "checking compilation flags used" one. And `SystemRequirements: C17`, which would
 pin the whole package back to a standard CRAN is actively moving off in order to avoid a
 diagnostic about four lines.
+
+### Patch 6 — trailing-array struct hacks become checkable
+
+CRAN's gcc-UBSAN flavor (gcc 16, `-fsanitize=address,undefined,bounds-strict`) reported against
+0.1.0:
+
+    mdbx.c:30178:25: runtime error: index 1 out of bounds for type 'iovec [1]'
+
+from `osal_ioring_add()`, on every commit that gathers more than one segment into a `pwritev()`.
+Three structures are allocated larger than they declare and indexed past the declared bound:
+`struct dpl` (`dp_t items[dpl_reserve_gap]`, the dirty-page list), `dml_t` (`da_t items[1]`, the
+defrag map list) and `ior_item_t` (`struct iovec sgv[1]`, the write-ring gather list). clang treats
+any trailing array as flexible and says nothing; `bounds-strict` checks the declared size.
+
+A local harness at CRAN's flags reproduced the `iovec` reports at the same lines, and — by dirtying
+more than 18 pages in one transaction — `index 18 out of bounds for type 'dp_t [18]'` at a dozen
+more sites that the package's own tests never reach. That second finding is why this is fixed for
+all three structures rather than only the one CRAN named: a real workload hits it.
+
+`dpl` and `dml_t` become true C99 flexible array members. Their size helpers counted the header
+with `sizeof()`, which included the declared array, so each gains a `*_header_size` macro adding it
+back — every allocation is byte-for-byte what it was. `sgv` shares an anonymous union with `single`,
+and a union cannot hold a flexible array member, so it is indexed through an `ior_sgv(item)`
+accessor that goes via a pointer instead.
+
+**Semantically neutral, not byte-identical.** With `__LINE__`/`__DATE__`/`__TIME__` pinned, gcc
+-O2 emits an equivalent but different sequence in `osal_ioring_add` (a lost store-pair merge);
+clang's diff is label and outlined-function renumbering.
+
+**Why no CI leg caught this, or the alignment reports.** The sanitizer leg was a local copy of the
+r-actions job with `-fno-sanitize=alignment` on `CFLAGS` — deliberately, to silence the misaligned
+accesses now fixed by `-DMDBX_UNALIGNED_OK=0` — and it ran clang only, so `bounds-strict` never
+ran at all. It now calls `pedrobtz/r-actions/.github/workflows/sanitizers.yml@v1` with
+`asan: true`, which is clang UBSan with nothing relaxed plus the R-hub `clang-asan` and `gcc-asan`
+containers, the latter being CRAN's gcc flavor.
+
+**Rejected alternatives:** `-DMDBX_HAVE_PWRITEV=0`, which removes the `sgv` path by issuing one
+`pwrite()` per contiguous run — an I/O behaviour change on every Linux and macOS install to silence
+a check, which also does nothing for `dpl`. And `-fno-sanitize=bounds-strict`, which is CRAN's
+setting rather than ours and would hide real out-of-bounds indexing.
 
 ### Reproducing
 
