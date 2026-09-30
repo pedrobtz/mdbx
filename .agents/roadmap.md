@@ -465,7 +465,7 @@ can outlive its own validity.
 
 ---
 
-## Stage 7 — Release hardening
+## Stage 7 — Release hardening — **DONE**
 
 - [x] `R CMD check --as-cran` clean on all five CI legs, plus sanitizers, valgrind, LTO,
       gctorture and rchk. All green at `e80a18a`.
@@ -690,6 +690,38 @@ out each change rather than deferring to the patch series.
 `cf3e1393` and commit `f7a3a932` for v0.14.3, both matching `.agents/vendoring.md`. The third
 identifier there, `v0.14.3-0-g251562b2`, is the amalgamation string upstream bakes into the sources
 and is not the tag commit — worth knowing before mistaking it for a mismatch.
+
+### CRAN submission
+
+0.1.0 took three uploads and was accepted on 27 September 2026, and 0.1.1 followed the next day
+to fix what CRAN's sanitizer checks then found. The record is worth keeping because every
+rejection and report below is the kind the whole portfolio can pre-empt:
+
+- **3 September, first upload.** Passed the pretest and sat in the queue for nine days. The
+  reviewer's one ask, on 12 September, was `\value` for every exported topic, describing the class
+  and structure of what comes back. `mdbx_scan_max` was the only gap: exported data rather than a
+  function, so roxygen had not prompted for one. The resubmission also carried the
+  `mdbx_dbi_drop()` fix, since the main database could not safely be emptied while named ones
+  existed.
+- **16 September, second upload.** Archived by the pretest within ten minutes: the Debian clang-23
+  leg builds C as `-std=gnu23`, and the vendored header's pre-C23 `bool`/`true`/`false`/`nullptr`
+  macros shadowed the new keywords (`-Wkeyword-macro`). Fixed the same day as the fifth local
+  patch, and the `ubuntu-clang` container leg was added to CI because no GitHub runner is that
+  compiler/standard combination.
+- **16 September, third upload.** Passed the pretest, waited eleven days for the human review, and
+  was accepted without further comment. Published 27 September.
+- **28 September, 0.1.1.** With 0.1.0 live, CRAN's *Additional issues* reported clang-UBSAN and
+  gcc-UBSAN failures, and the M1-SAN results the same misaligned accesses on arm64, all in the
+  bundled libmdbx. Prof. Ripley asked for a fix before 19 October. It went the same day:
+  `-DMDBX_UNALIGNED_OK=0` for the misaligned loads and stores, and `tools/patches/0006` for gcc's
+  `bounds-strict` reports (see *Native checks in CI*, above, for why CI had not caught either).
+  Uploaded at 12:29 UTC. The pretest repeated the sanitizer reports against 0.1.0, as it does for
+  the last released version, and the update was accepted and published within the hour.
+
+Both releases are tagged. `0.1.0` is `9c34172`, the commit `CRAN-SUBMISSION` recorded for the
+third upload. That file is no longer tracked, so `0.1.1` was placed by matching the CRAN tarball
+against the tree file by file: `152edfa`, the head of #21, built seven minutes before that pull
+request was merged. `cran-comments.md` is now the 0.1.1 text.
 
 ---
 

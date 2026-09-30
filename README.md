@@ -2,6 +2,7 @@
 # mdbx
 
 <!-- badges: start -->
+[![CRAN status](https://www.r-pkg.org/badges/version/mdbx)](https://CRAN.R-project.org/package=mdbx)
 [![R-CMD-check](https://github.com/pedrobtz/mdbx/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/pedrobtz/mdbx/actions/workflows/R-CMD-check.yaml)
 [![hardening](https://img.shields.io/github/actions/workflow/status/pedrobtz/mdbx/native-checks.yaml?branch=main&label=hardening)](https://github.com/pedrobtz/mdbx/actions/workflows/native-checks.yaml)
 [![coverage](https://raw.githubusercontent.com/pedrobtz/mdbx/main/.github/badges/coverage.svg)](https://github.com/pedrobtz/mdbx/actions/workflows/coverage.yaml)
@@ -24,8 +25,13 @@ implemented yet.
 
 ## Installation
 
-mdbx is not on CRAN yet. Install the development version from
-[GitHub](https://github.com/pedrobtz/mdbx) with:
+Install the released version from [CRAN](https://CRAN.R-project.org/package=mdbx) with:
+
+``` r
+install.packages("mdbx")
+```
+
+Or the development version from [GitHub](https://github.com/pedrobtz/mdbx) with:
 
 ``` r
 # install.packages("pak")

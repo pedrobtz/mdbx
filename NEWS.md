@@ -1,4 +1,8 @@
+# mdbx (development version)
+
 # mdbx 0.1.1
+
+CRAN release: 2026-09-28.
 
 * Fixes the undefined behaviour CRAN's clang-UBSAN and gcc-UBSAN checks
   reported in the bundled 'libmdbx' sources. 'libmdbx' read and wrote 16-, 32-
@@ -11,6 +15,8 @@
   results are identical.
 
 # mdbx 0.1.0
+
+CRAN release: 2026-09-27.
 
 * Initial version.
 
