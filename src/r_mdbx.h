@@ -12,6 +12,9 @@
 #include "mdbx.h"
 #include "r_mdbx_hooks.h"
 
+// From tools/patches/0009: where an environment's page-number lists start.
+extern "C" void mdbx_r_env_heap_roots(const MDBX_env *env, void *roots[2]);
+
 namespace mdbx_r {
 
 // The process this code is running in.
@@ -73,6 +76,14 @@ struct env_handle {
   std::string path;
 
   std::vector<txn_handle *> live_txns;
+
+  // Where libmdbx's page-number lists for this environment start, as of its
+  // open or its last write transaction. Never dereferenced. libmdbx holds
+  // those lists only by pointers into their middle, so an environment this
+  // package never closes -- a panicked one, or one inherited across a fork()
+  // -- would have them reported as "possibly lost" by valgrind. Keeping the
+  // start addresses here, and in the abandoned registry, keeps them reachable.
+  void *heap_roots[2] = {nullptr, nullptr};
 };
 
 // A transaction ends exactly once, and which way it ended is worth reporting.

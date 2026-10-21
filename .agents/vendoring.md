@@ -110,13 +110,14 @@ scripts; either works, but do not mix them.
 
 ## Local patches
 
-The vendored sources are **not pristine**: eight patches route libmdbx's panic and logging paths
+The vendored sources are **not pristine**: nine patches route libmdbx's panic and logging paths
 through R's API, remove nine diagnostic suppressions, sidestep a false-positive `-Warray-bounds`
 from Rtools' MinGW headers, stop the pre-C23 `bool`/`nullptr` compatibility macros from
 shadowing the C23 keywords, and replace three trailing-array struct hacks with forms a
 bounds-checking sanitizer accepts, so that `R CMD check --as-cran` reports no warnings and libmdbx cannot
-terminate the R session. Two more, added for 0.1.2, make a default-geometry open work under valgrind
-and stop a commit writing uninitialised bytes to disk. They must be re-applied whenever this pin moves.
+terminate the R session. Three more, added for 0.1.2, make a default-geometry open work under valgrind,
+stop a commit writing uninitialised bytes to disk, and expose where an environment's page-number
+lists start, so environments the package never closes are not reported as possibly lost. They must be re-applied whenever this pin moves.
 
 **The authoritative record is [../tools/patches/](../tools/patches/)**, which lives in the source
 repository only — `tools/` is excluded from the package build. This section keeps the narrative.
@@ -326,6 +327,27 @@ count says `chunk`, and every reader goes by it, so the tail is never read — b
 follows the list in memory, and that is uninitialised `malloc()` slack. The patch copies
 `gc_chunk_bytes(chunk)` and zeroes the rest. Record size and the bytes any reader sees are
 unchanged; the copy also stops reading past the end of the list.
+
+### Patch 9 — where an environment's page-number lists start
+
+With 0.1.2's first three fixes, CRAN's valgrind options still left errors in every test process:
+"possibly lost" records, which CRAN's default `--errors-for-leak-kinds=definite,possible` counts.
+All of them were the two page-number lists `txn_basal_create()` allocates for an environment's
+preallocated write transaction (`wr.repnl`, `wr.retired_pages`), in environments this package
+never closes on purpose — panicked ones, and those a forked child inherits. `pnl_alloc()` returns
+`malloc() + 4`, so nothing holds the start of either block, and valgrind cannot tell them from a
+leak. 8 such records appeared in each of 27 forked children of `test-fork.R`.
+
+The patch appends `mdbx_r_env_heap_roots()`, which returns `pnl - 1` for both lists. The package
+calls it after each open and each write transaction, stores the result in `env_handle::heap_roots`,
+and copies it into the abandoned-handle registry when it gives an environment up. It never
+dereferences the values. The lists move only inside a write transaction, so they are current
+whenever the environment is not mid-transaction — which covers a panic in the tests and a fork
+taken between transactions. A stale value is harmless: at worst that record is reported again.
+
+**Rejected alternatives:** valgrind's `--leak-check-heuristics`, none of which matches a 4-byte
+interior offset and which CRAN does not set; and calling `gc()` before forking in the tests, which
+removes only the environments that were garbage anyway, not the panicked ones every child inherits.
 
 ### Reproducing
 
