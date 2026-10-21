@@ -37,27 +37,31 @@ package's own code. The other 13 check flavours were OK for 0.1.1.
   memory stays reachable instead of lost.
 
 I reproduced the log on GitHub Actions before fixing it, with valgrind
-3.27.1, `--leak-check=full --track-origins=yes`, and no suppressions. A
-preloaded `sysconf()` reported 256 GB of RAM, so that 'libmdbx' would size
-its reservation as it does on a machine like CRAN's. That run gave the same
-examples ERROR, the same 4 test failures (`[ FAIL 4 | WARN 0 | SKIP 6 |
-PASS 978 ]`), the same uninitialised-byte reports and the same 5 definitely
-lost blocks. With 0.1.2, in the same configuration, examples and tests are
-OK (`[ FAIL 0 | WARN 0 | SKIP 6 | PASS 988 ]`), and every one of the 37
-processes valgrind ran reports 0 errors and 0 bytes definitely or
-indirectly lost. This configuration is now part of the package's CI.
+3.27.1 and the options from the memtests log, `--leak-check=full
+--track-origins=yes`, with no suppressions. A preloaded `sysconf()` reported
+256 GB of RAM, so that 'libmdbx' would size its reservation as it does on a
+machine like CRAN's. That run gave the same examples ERROR, the same 4 test
+failures (`[ FAIL 4 | WARN 0 | SKIP 6 | PASS 978 ]`), the same
+uninitialised-byte reports and the same 5 definitely lost blocks.
 
-Some "possibly lost" blocks from `pnl_alloc` remain in the test log, but not
-in the examples. They belong to databases the package must not close:
+With 0.1.2, in the same configuration, the examples and tests are OK
+(`[ FAIL 0 | WARN 0 | SKIP 6 | PASS 988 ]`). There are no memory errors and
+no definitely or indirectly lost blocks. 33 of the 37 processes valgrind
+runs report `ERROR SUMMARY: 0 errors`, the main test process and the examples
+among them.
 
-* in the main test process, databases the tests deliberately put into a
-  failed state, which are never passed back to 'libmdbx';
-* in the child processes that `test-fork.R` starts with
-  `parallel::mcparallel()`, databases inherited from the parent, which only
-  the parent may close.
+The other 4 processes report 7 "possibly lost" records each. Each process is
+an R session that the tests start. None of the 7 records was allocated by
+this package: four come from R's `setenv()`, two from threads started by
+'cli' and OpenBLAS, and one from glibc's dynamic loader.
 
-'libmdbx' holds these blocks through pointers into their middle rather than
-to their start, so valgrind cannot tell they are still in use.
+0.1.2 also no longer leaves "possibly lost" blocks of its own. In 0.1.1,
+'libmdbx' internal lists belonging to databases the package must not close
+were reported that way: databases put into a failed state on purpose by the
+tests, and databases inherited by forked child processes. The package now
+records where those lists start, so valgrind can see they are still in use.
+This needed one small read-only accessor added to the bundled sources. This
+configuration is now part of the package's CI.
 
 ## R CMD check results
 

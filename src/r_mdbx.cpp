@@ -148,6 +148,22 @@ void abandon(void *native) {
   abandoned->push_back(native);
 }
 
+// Give up an environment: its MDBX_env and the list starts recorded for it.
+void abandon_env(env_handle *handle) {
+  abandon(handle->env);
+  abandon(handle->heap_roots[0]);
+  abandon(handle->heap_roots[1]);
+}
+
+// Refresh env_handle::heap_roots. Only for a healthy environment of this
+// process: the lists move only inside a write transaction, so after each one
+// ends is enough, and a panicked environment keeps what it last recorded.
+void record_heap_roots(env_handle *handle) {
+  if (handle->env != nullptr && !handle->poisoned &&
+      handle->pid == current_pid())
+    mdbx_r_env_heap_roots(handle->env, handle->heap_roots);
+}
+
 [[noreturn]] void stop_after_panic(const mdbx_r_panic_info &panic) {
   cpp11::stop("libmdbx assertion failed: %s (%s:%u)", panic.message,
               panic.function, panic.line);
@@ -671,6 +687,8 @@ void unregister_txn(txn_handle *handle) {
 // Called on every path that terminates one, so that the registry holds exactly
 // the transactions libmdbx still considers live.
 void mark_finished(txn_handle *handle, txn_state state) {
+  if (handle->write && handle->owner != nullptr)
+    record_heap_roots(handle->owner);
   handle->txn = nullptr;
   handle->state = state;
   unregister_txn(handle);
@@ -700,7 +718,7 @@ void close_handle(env_handle *handle, bool propagate) {
   // and lock, from a process that never held them. Drop our copy of the pointer
   // and leave the environment to the process that owns it.
   if (handle->pid != current_pid()) {
-    abandon(handle->env);
+    abandon_env(handle);
     handle->env = nullptr;
     if (propagate)
       cpp11::stop("this mdbx environment belongs to process %ld and cannot be "
@@ -713,7 +731,7 @@ void close_handle(env_handle *handle, bool propagate) {
   // handle whose invariants it has already rejected is how a bad situation
   // becomes a crash.
   if (handle->poisoned) {
-    abandon(handle->env);
+    abandon_env(handle);
     handle->env = nullptr;
     return;
   }
@@ -1038,8 +1056,10 @@ cpp11::sexp mdbx_env_open_(std::string path, std::string key, bool readonly,
       mdbx_r_run_guarded(mdbx_r::open_call, &context, mdbx_r::poison_open, &panic);
 
   // Poisoned mid-open: the partially built env is deliberately not closed.
-  if (result != MDBX_R_GUARD_OK)
+  if (result != MDBX_R_GUARD_OK) {
+    mdbx_r::abandon_env(handle.get());
     mdbx_r::stop_after_panic(panic);
+  }
 
   if (context.rc != MDBX_SUCCESS) {
     // mdbx_env_create() succeeded but a later step failed; closing the handle
@@ -1056,6 +1076,7 @@ cpp11::sexp mdbx_env_open_(std::string path, std::string key, bool readonly,
 
   handle->key = key;
   handle->path = path;
+  mdbx_r::record_heap_roots(handle.get());
 
   // Registered only once the external pointer exists, so that a failure to
   // build it cannot leave the registry holding an address nothing will free.

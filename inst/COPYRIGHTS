@@ -53,7 +53,10 @@ EINVAL, which upstream does only in builds instrumented for Valgrind or
 AddressSanitizer; and copy
 only the populated part of a free-list record into the database page,
 zero-filling the rest of it, instead of copying uninitialised memory that is
-then written to disk. Together these ensure no compiled code writes to
+then written to disk; and add one function that reports where an
+environment's page-number lists start, so that the package can keep
+environments it deliberately never closes visibly reachable to memory
+checkers. Together these ensure no compiled code writes to
 stderr or terminates the R process. Each change is also recorded as a patch in
 tools/patches/ in the package's source repository. LICENSE, NOTICE and COPYRIGHT
 are unmodified.

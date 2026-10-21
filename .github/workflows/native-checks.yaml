@@ -112,13 +112,12 @@ jobs:
   #   using the default geometry failed (issue #30). 256 GB stands in for a
   #   machine of that class.
   #
-  # One deliberate difference from CRAN: possibly-lost blocks are shown but do
-  # not count as errors. libmdbx keeps its page-number lists by interior
-  # pointer, so an environment still open when a process exits reports its
-  # lists as "possibly lost": one given up after a deliberate panic in the
-  # tests, which must not re-enter libmdbx, or one a forked child of
-  # test-fork.R inherited, which only the parent may close. Everything else
-  # counts.
+  # The valgrind options are CRAN's exactly, so the ERROR SUMMARY lines here
+  # are the ones CRAN's log will show; tools/valgrind/scan-logs.py prints them.
+  # It fails on any error, any definite or indirect leak, and any possibly
+  # lost block allocated through mdbx code. Possibly lost blocks R or glibc
+  # allocate on their own are listed but not counted: CRAN sees those for
+  # every package.
   valgrind:
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -207,9 +206,7 @@ jobs:
         # the skip_on_cran() state-machine suites under valgrind as well.
         env:
           NOT_CRAN: "false"
-          VALGRIND_OPTS: >-
-            --leak-check=full --track-origins=yes --num-callers=30
-            --errors-for-leak-kinds=definite,indirect
+          VALGRIND_OPTS: --leak-check=full --track-origins=yes
         run: |
           Sys.setenv(LD_PRELOAD = Sys.getenv("FAKE_RAM_SO"))
           if (Sys.getenv("_R_CHECK_CRAN_INCOMING_", "") == "") Sys.setenv("_R_CHECK_CRAN_INCOMING_" = "false")
@@ -221,34 +218,12 @@ jobs:
           )
 
       # R CMD check does not fail on a valgrind finding: they land in the
-      # .Rout files, which check reads for R errors only. So grep them.
-      # "ERROR SUMMARY: 0 errors" is the ordinary line and must not match.
+      # .Rout files, which check reads for R errors only. So scan them.
       - name: Scan for valgrind findings
         if: always()
         run: |
-          set -eu
           logs=$(find check -name '*.Rout' -o -name '*.Rout.fail' 2>/dev/null || true)
-          if [ -z "$logs" ]; then
-            echo "No check output to scan." >&2
-            exit 1
-          fi
-          echo "possibly-lost records (reported, not counted):"
-          grep -hE 'are possibly lost in loss record' $logs | sed 's/^==[0-9]*== //' | sort | uniq -c || true
-          # "valgrind: " opens valgrind's own fatal messages, such as failing
-          # to start -- which otherwise leaves nothing else here to match.
-          pattern='^valgrind: |ERROR SUMMARY: [1-9]|definitely lost: [1-9]|indirectly lost: [1-9]|are definitely lost in loss record|Invalid read|Invalid write|Invalid free|Mismatched free|uninitialised|Conditional jump or move depends|Syscall param'
-          hits=$(grep -lE "$pattern" $logs || true)
-          if [ -n "$hits" ]; then
-            for f in $hits; do
-              echo "----------------------------------------------------------"
-              echo "$f"
-              echo "----------------------------------------------------------"
-              grep -E -A 30 "$pattern" "$f" || true
-            done
-            echo "::error::valgrind reported a memory error or leak"
-            exit 1
-          fi
-          echo "valgrind reported no errors or leaks."
+          python3 tools/valgrind/scan-logs.py $logs
 
       - uses: actions/upload-artifact@v4
         if: always()

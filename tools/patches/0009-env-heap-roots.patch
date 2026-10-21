@@ -1,0 +1,50 @@
+Subject: Expose where an environment's page-number lists start
+
+Adds one function, mdbx_r_env_heap_roots(), which reports the malloc() start
+of the two page-number lists (`wr.repnl`, `wr.retired_pages`) owned by an
+environment's preallocated write transaction. It reads two pointer fields and
+calls nothing.
+
+libmdbx keeps a page-number list by a pointer one element past the start of
+its block (pnl_alloc() returns `pnl + 1`). That is fine while the environment
+is closed in time, which frees the lists. But this package deliberately never
+closes two kinds of environment: one that has panicked, which must not
+re-enter libmdbx, and one inherited across a fork(), which belongs to the
+parent. Both stay allocated until the process exits, and valgrind, finding
+only interior pointers to their lists, reports every one as "possibly lost".
+CRAN runs valgrind with its default --errors-for-leak-kinds=definite,possible,
+so each became an error in the log: after 0.1.2 fixed everything else, these
+were the only errors left that came from this package -- 8 loss records in
+each of 27 forked test children, and more in the main test process.
+
+The package records the start addresses after each open and each write
+transaction, beside the handle and in its registry of abandoned handles, and
+never dereferences them. The function is for valgrind's sake only. It changes
+nothing in libmdbx: no existing line is touched.
+
+Rejected alternative: --leak-check-heuristics. None of valgrind's heuristics
+matches a 4-byte offset (length64 is for 8), and CRAN does not set them.
+
+--- a/src/vendor/libmdbx/mdbx.c
++++ b/src/vendor/libmdbx/mdbx.c
+@@ -42807,3 +42807,20 @@
+     __attribute__((__externally_visible__))
+ #endif
+     const char *const mdbx_sourcery_anchor = sourcery;
++
++/* R package patch: the start addresses of the two page-number lists an
++ * environment's preallocated write transaction owns, or null. Reads two
++ * pointer fields and nothing else; the package records the result next to
++ * environments it may never close, so that valgrind can see those lists are
++ * still owned. See tools/patches. */
++void mdbx_r_env_heap_roots(const MDBX_env *env, void *roots[2]);
++void mdbx_r_env_heap_roots(const MDBX_env *env, void *roots[2]) {
++  roots[0] = roots[1] = nullptr;
++  if (env == nullptr || env->basal_txn == nullptr)
++    return;
++  const MDBX_txn *const txn = env->basal_txn;
++  if (txn->wr.repnl)
++    roots[0] = txn->wr.repnl - 1;
++  if (txn->wr.retired_pages)
++    roots[1] = txn->wr.retired_pages - 1;
++}

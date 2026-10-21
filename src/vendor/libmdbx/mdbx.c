@@ -42807,3 +42807,20 @@ __dll_export
     __attribute__((__externally_visible__))
 #endif
     const char *const mdbx_sourcery_anchor = sourcery;
+
+/* R package patch: the start addresses of the two page-number lists an
+ * environment's preallocated write transaction owns, or null. Reads two
+ * pointer fields and nothing else; the package records the result next to
+ * environments it may never close, so that valgrind can see those lists are
+ * still owned. See tools/patches. */
+void mdbx_r_env_heap_roots(const MDBX_env *env, void *roots[2]);
+void mdbx_r_env_heap_roots(const MDBX_env *env, void *roots[2]) {
+  roots[0] = roots[1] = nullptr;
+  if (env == nullptr || env->basal_txn == nullptr)
+    return;
+  const MDBX_txn *const txn = env->basal_txn;
+  if (txn->wr.repnl)
+    roots[0] = txn->wr.repnl - 1;
+  if (txn->wr.retired_pages)
+    roots[1] = txn->wr.retired_pages - 1;
+}
