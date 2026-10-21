@@ -1,54 +1,74 @@
-## Update submission
+## Resubmission of an archived package
 
-This update fixes the issues reported for mdbx 0.1.0 under "Additional issues"
-on the CRAN check page (clang-UBSAN and gcc-UBSAN), and in the M1-SAN results
-for macOS arm64. All of them are in the bundled 'libmdbx' sources.
+mdbx was archived on 2026-10-19 because the valgrind issues reported for 0.1.1
+were not corrected in time:
 
-https://cran.r-project.org/web/checks/check_results_mdbx.html
+https://cran-archive.R-project.org/web/checks/2026/2026-10-19_check_results_mdbx.html
+https://www.stats.ox.ac.uk/pub/bdr/memtests/valgrind/mdbx/
 
-This responds to Prof. Ripley's two emails of 2026-09-28, which asked for
-these problems to be corrected before 2026-10-19. That is why this update
-follows the acceptance of 0.1.0 so closely.
+This version, 0.1.2, fixes all three problems in that log. The first is in the
+bundled 'libmdbx' sources. The second is also in 'libmdbx', where the
+'--track-origins=yes' output pointed to its cause. The third is in the
+package's own code. The other 13 check flavours were OK for 0.1.1.
 
-* Misaligned loads and stores (`mdbx.c:597`, `627`, `647`, `664`, `685`, `701`,
-  and `224` via `fetch_txnid`). 'libmdbx' decides at compile time whether to
-  dereference misaligned integer pointers directly, and enables that on x86-64
-  and arm64. It is now built with `-DMDBX_UNALIGNED_OK=0`, the library's own
-  switch for its byte-copy paths. This is set in `src/Makevars`. It also
-  covers M1-SAN's `mdbx.c:597`, `627` and `647`: on arm64 only the 16- and
-  32-bit accesses were direct, which is why M1-SAN reported fewer sites.
+* Examples ERROR and 4 test failures, `Invalid argument (mdbx error 22)` from
+  `mdbx_env_open()`. 'libmdbx' reserves address space for the database's
+  maximum size up front, and by default that maximum is about 1.6 times the
+  machine's physical RAM. Valgrind cannot map a region that large, and
+  answers with EINVAL. 'libmdbx' already has code to retry with a smaller
+  reservation, but it only runs in builds compiled with valgrind's headers.
+  It now runs in every build, as a local patch to the bundled sources,
+  described in `inst/COPYRIGHTS`. Natively an oversized reservation fails
+  with ENOMEM, not EINVAL, so nothing changes outside valgrind.
 
-* `index 1 out of bounds for type 'iovec [1]'` (`mdbx.c:30178` and nearby,
-  gcc only). 'libmdbx' allocates some structures larger than they are declared
-  and indexes past the declared trailing array, which `-fsanitize=bounds-strict`
-  reports. The same pattern in two other structures, not reached by the
-  package's tests, is fixed too. They are now C99 flexible array members, or
-  are indexed through a pointer. Allocation sizes are unchanged. This is a new
-  local patch to the bundled sources, and `inst/COPYRIGHTS` now describes it.
+* `Syscall param pwritev(vector[1])` / `pwrite64(buf) points to
+  uninitialised byte(s)`, traced to `pnl_alloc`. When 'libmdbx' writes a
+  free-list record, it reserves room for up to three more entries than the
+  record holds, and filled that slack by copying past the end of the list,
+  from uninitialised heap memory. It now copies only the entries the record
+  holds and zero-fills the rest. Readers use the count stored in the record,
+  so the on-disk format is unchanged. This is also a local patch, described
+  in `inst/COPYRIGHTS`.
 
-* The `test-process.R` failures (six in each Linux log, one in the M1-SAN
-  log) were a consequence of the first item. Those tests capture a child
-  `Rscript`'s output, and the UBSAN diagnostics printed by the child ended up
-  in that output. With the diagnostics gone, the tests pass.
+* `41,389 bytes in 5 blocks are definitely lost` from `txn_alloc`. After a
+  'libmdbx' assertion failure the package does not call back into the
+  library to free that transaction, and the test suite triggers such failures
+  on purpose. The package now keeps these pointers in a static list, so the
+  memory stays reachable instead of lost.
 
-I reproduced all three reports locally at the flags in the memtests and
-M1-SAN READMEs.
+I reproduced the log on GitHub Actions before fixing it, with valgrind
+3.27.1, `--leak-check=full --track-origins=yes`, and no suppressions. A
+preloaded `sysconf()` reported 256 GB of RAM, so that 'libmdbx' would size
+its reservation as it does on a machine like CRAN's. That run gave the same
+examples ERROR, the same 4 test failures (`[ FAIL 4 | WARN 0 | SKIP 6 |
+PASS 978 ]`), the same uninitialised-byte reports and the same 5 definitely
+lost blocks. With 0.1.2, in the same configuration, examples and tests are
+OK (`[ FAIL 0 | WARN 0 | SKIP 6 | PASS 988 ]`), and every one of the 37
+processes valgrind ran reports 0 errors and 0 bytes definitely or
+indirectly lost. This configuration is now part of the package's CI.
 
-* clang: `-fsanitize=undefined -fno-sanitize=function`, against the full test
-  suite. 0.1.0 gives the same five sites and the same 6 failures / 982 passes
-  as the clang-UBSAN log. 0.1.1 gives no UBSAN diagnostics and 988 passes.
-* gcc 16: `-fsanitize=address,undefined,bounds-strict`, against a stand-alone
-  driver of the bundled library. With 0.1.1 it gives no diagnostics.
-* Apple clang 21 on arm64: `-fsanitize=address,undefined`, the M1-SAN flags,
-  against the full test suite. 0.1.0 gives the same three sites and the same
-  1 failure / 987 passes as the M1-SAN log. 0.1.1 gives no diagnostics and
-  988 passes. ASan's runtime was loaded with the package rather than
-  preloaded, so its heap checks were inactive in that run; CI's `clang-asan`
-  and `gcc-asan` containers ran with them active, with no findings.
+Some "possibly lost" blocks from `pnl_alloc` remain in the test log, but not
+in the examples. They belong to databases the package must not close:
 
-The package's CI now runs UBSan with no checks disabled, plus the R-hub
-`clang-asan` and `gcc-asan` containers.
+* in the main test process, databases the tests deliberately put into a
+  failed state, which are never passed back to 'libmdbx';
+* in the child processes that `test-fork.R` starts with
+  `parallel::mcparallel()`, databases inherited from the parent, which only
+  the parent may close.
+
+'libmdbx' holds these blocks through pointers into their middle rather than
+to their start, so valgrind cannot tell they are still in use.
 
 ## R CMD check results
 
-0 errors | 0 warnings | 0 notes
+0 errors | 0 warnings | 1 note
+
+* New submission / Package was archived on CRAN: this is the resubmission
+  described above.
+
+## Test environments
+
+GitHub Actions: macOS, Windows and Ubuntu (R release), Windows (R-devel),
+Ubuntu (R oldrel-1), and the R-hub `ubuntu-clang` and `ubuntu-gcc16` r-devel
+containers. Also UBSan (clang and gcc), the `clang-asan` and `gcc-asan`
+containers, LTO, gctorture, and the valgrind configuration above.

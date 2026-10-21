@@ -114,9 +114,11 @@ jobs:
   #
   # One deliberate difference from CRAN: possibly-lost blocks are shown but do
   # not count as errors. libmdbx keeps its page-number lists by interior
-  # pointer, so an environment still open when a process exits -- a forked
-  # child of test-fork.R, which must not close what it inherited -- reports its
-  # lists as "possibly lost". Everything else counts.
+  # pointer, so an environment still open when a process exits reports its
+  # lists as "possibly lost": one given up after a deliberate panic in the
+  # tests, which must not re-enter libmdbx, or one a forked child of
+  # test-fork.R inherited, which only the parent may close. Everything else
+  # counts.
   valgrind:
     runs-on: ubuntu-latest
     timeout-minutes: 90
