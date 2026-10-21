@@ -270,8 +270,16 @@ jobs:
     with:
       step: 100
 
+  # cpp11 pinned to 0.5.3 for this leg only. From 0.5.4, cpp11 calls
+  # R_getRegisteredNamespace() whenever R_VERSION >= 4.6.0. The rchk image's
+  # R-devel (r89293, 2026-01-09) already calls itself 4.6.0 but predates that
+  # function, so cpp11.cpp does not compile and nothing gets analysed. Drop
+  # the pin once kalibera/rchk ships a newer R.
   rchk:
     uses: pedrobtz/r-actions/.github/workflows/rchk.yml@v1
+    with:
+      github-packages: |
+        r-lib/cpp11@v0.5.3
 
   # CRAN's rcnst, rlibro and vnu checks -- the "Additional issues" nothing
   # above reproduces. Full runs only: `quick`, which skips all three, on
