@@ -134,11 +134,18 @@ env_handle *find_open_env(const std::string &key) {
 // CRAN's check of 0.1.1 -- so the pointer is kept here instead, where it stays
 // reachable. Nothing reads it back. It grows by one entry per panic or
 // inherited handle, so it stays small.
-std::vector<void *> abandoned;
+//
+// Allocated once and never destroyed, through a plain pointer. A vector with
+// static storage would have its destructor run at exit -- before valgrind's
+// leak scan, which would then find the pointers gone after all.
+std::vector<void *> *abandoned = nullptr;
 
 void abandon(void *native) {
-  if (native != nullptr)
-    abandoned.push_back(native);
+  if (native == nullptr)
+    return;
+  if (abandoned == nullptr)
+    abandoned = new std::vector<void *>();
+  abandoned->push_back(native);
 }
 
 [[noreturn]] void stop_after_panic(const mdbx_r_panic_info &panic) {

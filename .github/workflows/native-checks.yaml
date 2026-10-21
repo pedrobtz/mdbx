@@ -241,7 +241,7 @@ jobs:
               echo "----------------------------------------------------------"
               echo "$f"
               echo "----------------------------------------------------------"
-              grep -E -A 16 "$pattern" "$f" || true
+              grep -E -A 30 "$pattern" "$f" || true
             done
             echo "::error::valgrind reported a memory error or leak"
             exit 1
