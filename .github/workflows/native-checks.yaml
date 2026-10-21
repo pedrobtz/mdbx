@@ -144,8 +144,12 @@ jobs:
           make -j"$(nproc)" > /dev/null
           make install > /dev/null
 
+      # valgrind must redirect memcmp in ld.so, and finds it only through
+      # glibc's debug symbols; without them it refuses to start at all.
       - name: Put valgrind on PATH and build the RAM shim
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libc6-dbg > /dev/null
           echo "$HOME/valgrind/bin" >> "$GITHUB_PATH"
           cc -shared -fPIC -O2 -o "$RUNNER_TEMP/fake-ram.so" tools/valgrind/fake-ram.c -ldl
           echo "FAKE_RAM_SO=$RUNNER_TEMP/fake-ram.so" >> "$GITHUB_ENV"
@@ -187,7 +191,10 @@ jobs:
       # passes it on to the program it runs, alongside its own preloads.
       - name: R CMD check --use-valgrind
         shell: Rscript {0}
+        # NOT_CRAN=false, as on CRAN: setup-r sets it true, which would run
+        # the skip_on_cran() state-machine suites under valgrind as well.
         env:
+          NOT_CRAN: "false"
           VALGRIND_OPTS: >-
             --leak-check=full --track-origins=yes --num-callers=30
             --errors-for-leak-kinds=definite,indirect
@@ -215,7 +222,9 @@ jobs:
           fi
           echo "possibly-lost records (reported, not counted):"
           grep -hE 'are possibly lost in loss record' $logs | sed 's/^==[0-9]*== //' | sort | uniq -c || true
-          pattern='ERROR SUMMARY: [1-9]|definitely lost: [1-9]|indirectly lost: [1-9]|are definitely lost in loss record|Invalid read|Invalid write|Invalid free|Mismatched free|uninitialised|Conditional jump or move depends|Syscall param'
+          # "valgrind: " opens valgrind's own fatal messages, such as failing
+          # to start -- which otherwise leaves nothing else here to match.
+          pattern='^valgrind: |ERROR SUMMARY: [1-9]|definitely lost: [1-9]|indirectly lost: [1-9]|are definitely lost in loss record|Invalid read|Invalid write|Invalid free|Mismatched free|uninitialised|Conditional jump or move depends|Syscall param'
           hits=$(grep -lE "$pattern" $logs || true)
           if [ -n "$hits" ]; then
             for f in $hits; do
