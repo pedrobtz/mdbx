@@ -7,7 +7,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">mdbx</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Released version">0.1.1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Released version">0.1.2</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -35,15 +35,27 @@
   <main id="main" class="col-md-9"><div class="page-header">
 
       <h1>Changelog</h1>
-      <small>Source: <a href="https://github.com/pedrobtz/mdbx/blob/0.1.1/NEWS.md" class="external-link"><code>NEWS.md</code></a></small>
+      <small>Source: <a href="https://github.com/pedrobtz/mdbx/blob/main/NEWS.md" class="external-link"><code>NEWS.md</code></a></small>
     </div>
 
     <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.1.2" id="mdbx-012">mdbx 0.1.2<a class="anchor" aria-label="anchor" href="#mdbx-012"></a></h2>
+<ul><li>
+<p>Fixes the problems CRAN’s valgrind check reported for 0.1.1, which led to its archival on 2026-10-19 (<a href="https://github.com/pedrobtz/mdbx/issues/30" class="external-link">#30</a>). All three are in how the bundled ‘libmdbx’ behaves under valgrind, or in what valgrind sees; nothing changes for code run natively.</p>
+<ul><li>
+<code><a href="../reference/mdbx_env_open.html">mdbx_env_open()</a></code> with the default geometry failed with “Invalid argument” under valgrind on a machine with a lot of RAM. ‘libmdbx’ reserves address space in proportion to RAM, and valgrind refuses a reservation that large. ‘libmdbx’ already retries with a smaller one, but only in builds made for valgrind; it now does so in every build.</li>
+<li>A commit wrote a few bytes of uninitialised memory to disk: the unused tail of a free-list record, which no reader ever looks at. It is now zero-filled.</li>
+<li>A transaction or environment deliberately given up after a ‘libmdbx’ assertion failure was reported as a “definitely lost” leak. It is still given up, but is now kept reachable, so valgrind no longer counts it.</li>
+</ul></li>
+</ul></div>
+    <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.1.1" id="mdbx-011">mdbx 0.1.1<a class="anchor" aria-label="anchor" href="#mdbx-011"></a></h2><p class="text-muted">CRAN release: 2026-09-28</p>
+<p>CRAN release: 2026-09-28.</p>
 <ul><li>Fixes the undefined behaviour CRAN’s clang-UBSAN and gcc-UBSAN checks reported in the bundled ‘libmdbx’ sources. ‘libmdbx’ read and wrote 16-, 32- and 64-bit values through misaligned pointers on x86-64 and arm64; it is now built with <code>MDBX_UNALIGNED_OK=0</code>, which routes those accesses through byte copies. Three internal structures that ‘libmdbx’ deliberately indexes past their declared length are now C99 flexible array members, or are indexed through a pointer, so gcc’s <code>-fsanitize=bounds-strict</code> no longer reports them. Nothing observable changes: on-disk format, allocation sizes and results are identical.</li>
 </ul></div>
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.1.0" id="mdbx-010">mdbx 0.1.0<a class="anchor" aria-label="anchor" href="#mdbx-010"></a></h2><p class="text-muted">CRAN release: 2026-09-27</p>
+<p>CRAN release: 2026-09-27.</p>
 <ul><li><p>Initial version.</p></li>
 <li><p><code><a href="../reference/mdbx_env_open.html">mdbx_env_open()</a></code> refuses a path this process already has open, naming the conflict, rather than passing on the lock file’s own failure (<code>EAGAIN</code> on macOS). Different spellings of one environment – a relative path against an absolute one, a symlinked directory, the data file of a <code>subdir = TRUE</code> layout – are recognised as the same path (<a href="https://github.com/pedrobtz/mdbx/issues/2" class="external-link">#2</a>).</p></li>
 <li><p><code><a href="../reference/mdbx_dbi_open.html">mdbx_dbi_open()</a></code> names the database it could not open, and says why <code>create = TRUE</code> needs a write transaction, instead of reporting libmdbx’s <code>MDBX_NOTFOUND</code> and <code>EACCES</code> (<a href="https://github.com/pedrobtz/mdbx/issues/3" class="external-link">#3</a>).</p></li>

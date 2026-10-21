@@ -21,7 +21,15 @@ batched calls, which are not implemented yet.
 
 ## Installation
 
-mdbx is not on CRAN yet. Install the development version from
+Install the released version from
+[CRAN](https://CRAN.R-project.org/package=mdbx) with:
+
+``` r
+
+install.packages("mdbx")
+```
+
+Or the development version from
 [GitHub](https://github.com/pedrobtz/mdbx) with:
 
 ``` r

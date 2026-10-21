@@ -6,14 +6,22 @@ with code in this repository.
 ## Project state
 
 `mdbx` is an R binding to [libmdbx](https://libmdbx.dqdkfa.ru/), an
-embedded transactional key-value store. **Stages 0-6 of the roadmap are
-done**: the vendored build is green on all five CI legs, environments
-live in `src/r_mdbx.cpp` + `R/env.R`, transactions in `R/txn.R`,
-get/put/del in `R/data.R`, stat/info in `R/stat.R`, key listing in
-`R/scan.R`, environment/transaction flags in `src/r_flags.cpp` +
-`R/flags.R`, and the concurrency contract in `R/concurrency.R`. Stage 7
-(release hardening) is next. `DESCRIPTION` is filled in; the license is
-MIT.
+embedded transactional key-value store. **0.1.1 is on CRAN**, published
+on 28 September 2026. 0.1.0 was accepted the day before, at the third
+upload; CRAN’s clang-UBSAN, gcc-UBSAN and M1-SAN checks then reported
+undefined behaviour in the bundled libmdbx, and 0.1.1 is the fix,
+resubmitted the same day. Every stage of the roadmap through Stage 7
+(release hardening) is done. The vendored build is green on all five CI
+legs, environments live in `src/r_mdbx.cpp` + `R/env.R`, transactions in
+`R/txn.R`, get/put/del in `R/data.R`, stat/info in `R/stat.R`, key
+listing in `R/scan.R`, environment/transaction flags in
+`src/r_flags.cpp` + `R/flags.R`, and the concurrency contract in
+`R/concurrency.R`. The default branch carries the development version
+`0.1.1.9000`; the next release is 0.2, whose scope is the *Feature gap*
+section of the roadmap, cursors first. CRAN asks that updates come no
+more often than every one to two months, so nothing goes back before 9
+November 2026, six weeks after 0.1.1 (the `cran-release` reminder issue
+tracks the date). The license is MIT.
 
 The exported API mirrors the C API: `mdbx_env_*`, `mdbx_txn_*`, and bare
 `mdbx_get`/`mdbx_put`/ `mdbx_del`. After adding a `[[cpp11::register]]`
@@ -226,16 +234,18 @@ follows one of them:
 
 ## The vendor tree is patched
 
-`src/vendor/libmdbx/` is **not** pristine. Six patches in
+`src/vendor/libmdbx/` is **not** pristine. Eight patches in
 `tools/patches/` route libmdbx’s panic and logging through R’s API, drop
 nine `#pragma diagnostic ignored` lines, sidestep a false-positive
 `-Warray-bounds` from Rtools’ MinGW headers, keep the pre-C23
-`bool`/`nullptr` macros from shadowing the C23 keywords, and turn three
+`bool`/`nullptr` macros from shadowing the C23 keywords, turn three
 trailing-array struct hacks into forms gcc’s `-fsanitize=bounds-strict`
-accepts. They are applied **by the maintainer during a version bump**,
-never at build time — `tools/update-libmdbx.sh` re-vendors and replays
-the series. Never hand-edit the vendored sources: add or change a patch,
-regenerate, and update the post-patch digests in
+accepts, retry a refused `mmap()` reservation smaller (valgrind refuses
+libmdbx’s RAM-scaled default), and stop GC records carrying
+uninitialised bytes to disk. They are applied **by the maintainer during
+a version bump**, never at build time — `tools/update-libmdbx.sh`
+re-vendors and replays the series. Never hand-edit the vendored sources:
+add or change a patch, regenerate, and update the post-patch digests in
 `tools/patches/README.md`. The *Local patches* section of
 [.agents/vendoring.md](https://pedrobtz.github.io/mdbx/.agents/vendoring.md)
 carries the narrative — what each patch does, and which alternatives
