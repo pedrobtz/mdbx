@@ -124,6 +124,23 @@ env_handle *find_open_env(const std::string &key) {
   return nullptr;
 }
 
+// Native handles given up on rather than ended: those of a panicked
+// environment, which must not re-enter libmdbx, and those inherited across a
+// fork(), which belong to the parent.
+//
+// Giving one up is deliberate, and the process keeps its memory until it
+// exits. Dropping the last pointer to it would also be indistinguishable from
+// a leak -- valgrind reported each such MDBX_txn as "definitely lost" in
+// CRAN's check of 0.1.1 -- so the pointer is kept here instead, where it stays
+// reachable. Nothing reads it back. It grows by one entry per panic or
+// inherited handle, so it stays small.
+std::vector<void *> abandoned;
+
+void abandon(void *native) {
+  if (native != nullptr)
+    abandoned.push_back(native);
+}
+
 [[noreturn]] void stop_after_panic(const mdbx_r_panic_info &panic) {
   cpp11::stop("libmdbx assertion failed: %s (%s:%u)", panic.message,
               panic.function, panic.line);
@@ -676,6 +693,7 @@ void close_handle(env_handle *handle, bool propagate) {
   // and lock, from a process that never held them. Drop our copy of the pointer
   // and leave the environment to the process that owns it.
   if (handle->pid != current_pid()) {
+    abandon(handle->env);
     handle->env = nullptr;
     if (propagate)
       cpp11::stop("this mdbx environment belongs to process %ld and cannot be "
@@ -688,6 +706,7 @@ void close_handle(env_handle *handle, bool propagate) {
   // handle whose invariants it has already rejected is how a bad situation
   // becomes a crash.
   if (handle->poisoned) {
+    abandon(handle->env);
     handle->env = nullptr;
     return;
   }
@@ -719,10 +738,14 @@ void detach_txns(env_handle *handle) {
                      handle->pid == current_pid();
 
   for (txn_handle *txn : handle->live_txns) {
+    bool ended = false;
     if (usable && txn->txn != nullptr && !txn->poisoned) {
       finish_context context = {txn, false, MDBX_SUCCESS};
-      mdbx_r_run_guarded(finish_call, &context, poison_finish, nullptr);
+      ended = mdbx_r_run_guarded(finish_call, &context, poison_finish,
+                                 nullptr) == MDBX_R_GUARD_OK;
     }
+    if (!ended)
+      abandon(txn->txn);
     txn->txn = nullptr;
     txn->state = txn_state::aborted;
     txn->owner = nullptr;
@@ -757,15 +780,20 @@ void finalize_txn(SEXP ptr) {
   // Abandoning a transaction to the GC aborts it. Only reachable while the
   // environment is still open, because detach_txns() clears handle->txn
   // whenever the environment goes first.
+  bool ended = false;
   if (handle->txn != nullptr && !handle->poisoned && handle->owner != nullptr &&
       handle->owner->env != nullptr && !handle->owner->poisoned &&
       handle->pid == current_pid()) {
     finish_context context = {handle, false, MDBX_SUCCESS};
-    mdbx_r_run_guarded(finish_call, &context, poison_finish, nullptr);
+    ended = mdbx_r_run_guarded(finish_call, &context, poison_finish,
+                               nullptr) == MDBX_R_GUARD_OK;
   }
 
-  if (handle->txn != nullptr)
+  if (handle->txn != nullptr) {
+    if (!ended)
+      abandon(handle->txn);
     mark_finished(handle, txn_state::aborted);
+  }
   else
     unregister_txn(handle);
 
@@ -1224,6 +1252,7 @@ void mdbx_txn_abort_(cpp11::sexp txn) {
   if (handle->pid == mdbx_r::current_pid() &&
       (handle->poisoned || handle->owner == nullptr ||
        handle->owner->env == nullptr || handle->owner->poisoned)) {
+    mdbx_r::abandon(handle->txn);
     mdbx_r::mark_finished(handle, mdbx_r::txn_state::aborted);
     R_SetExternalPtrProtected(txn, R_NilValue);
     return;

@@ -128,9 +128,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache valgrind
+      # Restore and save as separate steps, so the build is cached as soon as
+      # it exists: actions/cache saves only when the whole job succeeds, and
+      # this job's purpose includes failing.
+      - name: Restore valgrind
         id: cache-valgrind
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/valgrind
           key: valgrind-${{ env.VALGRIND_VERSION }}-${{ runner.os }}-${{ runner.arch }}
@@ -143,6 +146,13 @@ jobs:
           ./configure --prefix="$HOME/valgrind" > /dev/null
           make -j"$(nproc)" > /dev/null
           make install > /dev/null
+
+      - name: Save valgrind
+        if: steps.cache-valgrind.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/valgrind
+          key: ${{ steps.cache-valgrind.outputs.cache-primary-key }}
 
       # valgrind must redirect memcmp in ld.so, and finds it only through
       # glibc's debug symbols; without them it refuses to start at all.

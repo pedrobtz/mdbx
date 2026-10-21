@@ -23947,7 +23947,12 @@ static int gc_store_retired(MDBX_txn *txn, gcu_t *ctx) {
          *    and should be placed with the smaller txnid. */
         const pgno_t save = *begin;
         *begin = (pgno_t)chunk;
-        memcpy(data.iov_base, begin, data.iov_len);
+        /* R package patch: copy the `chunk` entries the record holds and zero
+         * the rest of the reservation, rather than copying data.iov_len bytes
+         * -- sized for chunk_hi -- which reads past the end of the list into
+         * uninitialised slack and writes it to disk. See tools/patches. */
+        memcpy(data.iov_base, begin, gc_chunk_bytes(chunk));
+        memset(ptr_disp(data.iov_base, gc_chunk_bytes(chunk)), 0, data.iov_len - gc_chunk_bytes(chunk));
         *begin = save;
         TRACE("%s: put-retired/bigfoot @ %" PRIaTXN " (slice #%u) #%zu [%zu..%zu] of %zu", dbg_prefix(ctx),
               ctx->bigfoot, (unsigned)(ctx->bigfoot - txn->txnid), chunk, at, at + chunk, retired_before);
@@ -31792,7 +31797,11 @@ retry:
   if (unlikely(map->base == MAP_FAILED)) {
     err = errno;
     ASSERT(err != 0);
-    if ((RUNNING_ON_ASAN || mdbx_running_on_Valgrind()) && err == EINVAL && map->limit - map->current > MEGABYTE) {
+    /* R package patch: shrink and retry on any EINVAL, not only when built
+     * with ENABLE_MEMCHECK and running on Valgrind. This package is not built
+     * with it, yet CRAN runs it under Valgrind, whose mmap() refuses a
+     * reservation as large as the RAM-scaled default. See tools/patches. */
+    if (err == EINVAL && map->limit - map->current > MEGABYTE) {
       map->limit -= (map->limit - map->current) / 2;
       map->limit = max_unsigned(size, floor_powerof2(map->limit, MEGABYTE));
       goto retry;

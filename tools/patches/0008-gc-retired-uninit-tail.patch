@@ -1,0 +1,43 @@
+Subject: Stop writing uninitialised list slack into GC records
+
+gc_store_retired() reserves a GC record sized for `chunk_hi` page numbers --
+`left_before | 3`, so up to three more than the list holds -- and then copies
+data.iov_len bytes from the retired-pages list into it. Only the first `chunk`
+entries are the record; the count at its head says so, and every reader goes
+by the count. The bytes after them are whatever lies past the end of the list:
+the uninitialised slack of its malloc() block from pnl_alloc(), which the
+commit then writes to disk.
+
+CRAN's valgrind run of 0.1.1 reported it as
+
+    Syscall param pwritev(vector[1]) points to uninitialised byte(s)
+    Syscall param pwrite64(buf) points to uninitialised byte(s)
+      Uninitialised value was created by a heap allocation
+        at malloc / by pnl_alloc / by txn_basal_create
+
+two contexts, from the commit path. The package's CI had suppressed these as
+"page padding" (tools/valgrind.supp); --track-origins=yes, which CRAN uses,
+shows the origin is the list, not the page: page_shadow_alloc() zeroes every
+page it hands out.
+
+This copies gc_chunk_bytes(chunk) bytes and zeroes the rest of the
+reservation. The record's contents up to its count are unchanged, so is its
+size, and the zeroed tail is never read. It also stops the copy reading up to
+three entries past the end of the list.
+
+--- a/src/vendor/libmdbx/mdbx.c
++++ b/src/vendor/libmdbx/mdbx.c
+@@ -23947,7 +23947,12 @@
+          *    and should be placed with the smaller txnid. */
+         const pgno_t save = *begin;
+         *begin = (pgno_t)chunk;
+-        memcpy(data.iov_base, begin, data.iov_len);
++        /* R package patch: copy the `chunk` entries the record holds and zero
++         * the rest of the reservation, rather than copying data.iov_len bytes
++         * -- sized for chunk_hi -- which reads past the end of the list into
++         * uninitialised slack and writes it to disk. See tools/patches. */
++        memcpy(data.iov_base, begin, gc_chunk_bytes(chunk));
++        memset(ptr_disp(data.iov_base, gc_chunk_bytes(chunk)), 0, data.iov_len - gc_chunk_bytes(chunk));
+         *begin = save;
+         TRACE("%s: put-retired/bigfoot @ %" PRIaTXN " (slice #%u) #%zu [%zu..%zu] of %zu", dbg_prefix(ctx),
+               ctx->bigfoot, (unsigned)(ctx->bigfoot - txn->txnid), chunk, at, at + chunk, retired_before);
