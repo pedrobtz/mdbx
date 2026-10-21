@@ -18,9 +18,10 @@
     unused tail of a free-list record, which no reader ever looks at. It
     is now zero-filled.
   - A transaction or environment deliberately given up after a ‘libmdbx’
-    assertion failure was reported as a “definitely lost” leak. It is
-    still given up, but is now kept reachable, so valgrind no longer
-    counts it.
+    assertion failure was reported as a “definitely lost” leak, and its
+    internal lists, like those of an environment inherited by a forked
+    process, as “possibly lost”. They are still given up, but are now
+    kept reachable, so valgrind no longer counts them.
 
 ## mdbx 0.1.1
 
