@@ -47,7 +47,13 @@ promoted all four to keywords; and declare three trailing arrays that are
 deliberately indexed past their declared length (the dirty-page list, the
 defragmentation map list and the write-ring gather list) as C99 flexible array
 members, or index them through a pointer, so that bounds-checking sanitizers do
-not report them. Allocation sizes are unchanged. Together these ensure no compiled code writes to
+not report them. Allocation sizes are unchanged. They also let the memory
+map be retried at a smaller size when mmap() refuses a large reservation with
+EINVAL, which upstream does only in builds instrumented for Valgrind or
+AddressSanitizer; and copy
+only the populated part of a free-list record into the database page,
+zero-filling the rest of it, instead of copying uninitialised memory that is
+then written to disk. Together these ensure no compiled code writes to
 stderr or terminates the R process. Each change is also recorded as a patch in
 tools/patches/ in the package's source repository. LICENSE, NOTICE and COPYRIGHT
 are unmodified.

@@ -93,31 +93,169 @@ jobs:
             devtools::test(shuffle = TRUE, stop_on_failure = TRUE)
           }
 
-  # --leak-check=full because R's own --use-valgrind does not set it, so a
-  # "definitely lost" total arrives with no stack and cannot be attributed
-  # from the artifact. Not --track-origins: it answers where an uninitialised
-  # value came from, which was worth having while the page-padding findings
-  # were being identified and is dead weight now that they are suppressed --
-  # it took the job from 6 minutes to 15. Turning leak-check on also makes
-  # every leak record an error,
-  # and the default errors-for-leak-kinds counts "possibly lost" among them --
-  # which here is libmdbx holding interior pointers into its own allocations,
-  # not a leak, and is reported without a stack because it is not shown. So
-  # the two kinds that are shown are the two that count.
+  # CRAN's valgrind check, as closely as a GitHub runner allows. The settings
+  # are the ones in https://www.stats.ox.ac.uk/pub/bdr/memtests/README.txt
+  # and in the logs it publishes: valgrind 3.27.1, --leak-check=full and
+  # --track-origins=yes, R CMD check --use-valgrind, so examples as well as
+  # tests -- and no suppression file, because CRAN runs without one.
   #
-  # The suppression file covers exactly two established-benign classes, both
-  # with their stacks recorded in tools/valgrind.supp: libmdbx writing page
-  # padding it never initialised, and the MDBX_env/MDBX_txn this package
-  # deliberately abandons after a libmdbx panic instead of re-entering a
-  # library that has rejected its own invariants. tools/ is in .Rbuildignore,
-  # so none of this reaches the tarball.
+  # Local rather than r-actions' valgrind.yml, for two reasons that are both
+  # about matching CRAN, not about this package:
+  #
+  # * valgrind is built from source at CRAN's version. Ubuntu's is 3.22, and
+  #   the leg it ran was green while CRAN's 3.27.1 run of 0.1.1 was not.
+  # * tools/valgrind/fake-ram.c is preloaded so that sysconf() reports
+  #   FAKE_RAM_GB of physical memory. libmdbx sizes its default upper
+  #   geometry at about 1.6x RAM, so on a 16 GB runner a default open asks
+  #   valgrind to map ~20 GB, which it can; on CRAN's machine it asked for far
+  #   more, valgrind's mmap() refused with EINVAL, and every example and test
+  #   using the default geometry failed (issue #30). 256 GB stands in for a
+  #   machine of that class.
+  #
+  # One deliberate difference from CRAN: possibly-lost blocks are shown but do
+  # not count as errors. libmdbx keeps its page-number lists by interior
+  # pointer, so an environment still open when a process exits reports its
+  # lists as "possibly lost": one given up after a deliberate panic in the
+  # tests, which must not re-enter libmdbx, or one a forked child of
+  # test-fork.R inherited, which only the parent may close. Everything else
+  # counts.
   valgrind:
-    uses: pedrobtz/r-actions/.github/workflows/valgrind.yml@v1
-    with:
-      valgrind-opts: >-
-        --leak-check=full
-        --show-leak-kinds=definite,indirect --errors-for-leak-kinds=definite,indirect
-      suppressions: "tools/valgrind.supp"
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      VALGRIND_VERSION: "3.27.1"
+      FAKE_RAM_GB: "256"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Restore and save as separate steps, so the build is cached as soon as
+      # it exists: actions/cache saves only when the whole job succeeds, and
+      # this job's purpose includes failing.
+      - name: Restore valgrind
+        id: cache-valgrind
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/valgrind
+          key: valgrind-${{ env.VALGRIND_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Build valgrind ${{ env.VALGRIND_VERSION }}
+        if: steps.cache-valgrind.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL "https://sourceware.org/pub/valgrind/valgrind-${VALGRIND_VERSION}.tar.bz2" | tar -xj -C "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP/valgrind-${VALGRIND_VERSION}"
+          ./configure --prefix="$HOME/valgrind" > /dev/null
+          make -j"$(nproc)" > /dev/null
+          make install > /dev/null
+
+      - name: Save valgrind
+        if: steps.cache-valgrind.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/valgrind
+          key: ${{ steps.cache-valgrind.outputs.cache-primary-key }}
+
+      # valgrind must redirect memcmp in ld.so, and finds it only through
+      # glibc's debug symbols; without them it refuses to start at all.
+      - name: Put valgrind on PATH and build the RAM shim
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libc6-dbg > /dev/null
+          echo "$HOME/valgrind/bin" >> "$GITHUB_PATH"
+          cc -shared -fPIC -O2 -o "$RUNNER_TEMP/fake-ram.so" tools/valgrind/fake-ram.c -ldl
+          echo "FAKE_RAM_SO=$RUNNER_TEMP/fake-ram.so" >> "$GITHUB_ENV"
+          "$HOME/valgrind/bin/valgrind" --version
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: any::rcmdcheck
+          needs: check
+
+      # The fastest evidence there is: one default-geometry open under
+      # valgrind, before the check spends half an hour getting to one.
+      - name: Probe a default-geometry open under valgrind
+        run: |
+          R CMD INSTALL . > /dev/null
+          cat > "$RUNNER_TEMP/probe.R" <<'EOF'
+          library(mdbx)
+          for (map_size in list(NULL, 8 * 1024^2)) {
+            label <- if (is.null(map_size)) "default" else "8 MB"
+            res <- tryCatch({
+              env <- mdbx_env_open(tempfile(), map_size = map_size)
+              on.exit(mdbx_env_close(env))
+              sprintf("ok, geo_upper = %.1f GB", mdbx_env_info(env)$geo_upper / 1024^3)
+            }, error = conditionMessage)
+            cat(sprintf("map_size %-8s %s\n", label, res))
+          }
+          EOF
+          echo "--- without valgrind"
+          LD_PRELOAD="$FAKE_RAM_SO" Rscript "$RUNNER_TEMP/probe.R"
+          echo "--- under valgrind"
+          LD_PRELOAD="$FAKE_RAM_SO" R -d valgrind --vanilla -q -f "$RUNNER_TEMP/probe.R" 2>&1 | grep -v '^==' || true
+
+      # VALGRIND_OPTS is read by valgrind itself, so it reaches every valgrind
+      # R CMD check starts. LD_PRELOAD reaches them the same way: valgrind
+      # passes it on to the program it runs, alongside its own preloads.
+      - name: R CMD check --use-valgrind
+        shell: Rscript {0}
+        # NOT_CRAN=false, as on CRAN: setup-r sets it true, which would run
+        # the skip_on_cran() state-machine suites under valgrind as well.
+        env:
+          NOT_CRAN: "false"
+          VALGRIND_OPTS: >-
+            --leak-check=full --track-origins=yes --num-callers=30
+            --errors-for-leak-kinds=definite,indirect
+        run: |
+          Sys.setenv(LD_PRELOAD = Sys.getenv("FAKE_RAM_SO"))
+          if (Sys.getenv("_R_CHECK_CRAN_INCOMING_", "") == "") Sys.setenv("_R_CHECK_CRAN_INCOMING_" = "false")
+          rcmdcheck::rcmdcheck(
+            args = c("--no-manual", "--as-cran", "--use-valgrind"),
+            build_args = c("--no-manual"),
+            check_dir = "check",
+            error_on = "warning"
+          )
+
+      # R CMD check does not fail on a valgrind finding: they land in the
+      # .Rout files, which check reads for R errors only. So grep them.
+      # "ERROR SUMMARY: 0 errors" is the ordinary line and must not match.
+      - name: Scan for valgrind findings
+        if: always()
+        run: |
+          set -eu
+          logs=$(find check -name '*.Rout' -o -name '*.Rout.fail' 2>/dev/null || true)
+          if [ -z "$logs" ]; then
+            echo "No check output to scan." >&2
+            exit 1
+          fi
+          echo "possibly-lost records (reported, not counted):"
+          grep -hE 'are possibly lost in loss record' $logs | sed 's/^==[0-9]*== //' | sort | uniq -c || true
+          # "valgrind: " opens valgrind's own fatal messages, such as failing
+          # to start -- which otherwise leaves nothing else here to match.
+          pattern='^valgrind: |ERROR SUMMARY: [1-9]|definitely lost: [1-9]|indirectly lost: [1-9]|are definitely lost in loss record|Invalid read|Invalid write|Invalid free|Mismatched free|uninitialised|Conditional jump or move depends|Syscall param'
+          hits=$(grep -lE "$pattern" $logs || true)
+          if [ -n "$hits" ]; then
+            for f in $hits; do
+              echo "----------------------------------------------------------"
+              echo "$f"
+              echo "----------------------------------------------------------"
+              grep -E -A 30 "$pattern" "$f" || true
+            done
+            echo "::error::valgrind reported a memory error or leak"
+            exit 1
+          fi
+          echo "valgrind reported no errors or leaks."
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: valgrind-check
+          path: check
+          if-no-files-found: ignore
 
   lto:
     uses: pedrobtz/r-actions/.github/workflows/lto.yml@v1
@@ -132,8 +270,16 @@ jobs:
     with:
       step: 100
 
+  # cpp11 pinned to 0.5.3 for this leg only. From 0.5.4, cpp11 calls
+  # R_getRegisteredNamespace() whenever R_VERSION >= 4.6.0. The rchk image's
+  # R-devel (r89293, 2026-01-09) already calls itself 4.6.0 but predates that
+  # function, so cpp11.cpp does not compile and nothing gets analysed. Drop
+  # the pin once kalibera/rchk ships a newer R.
   rchk:
     uses: pedrobtz/r-actions/.github/workflows/rchk.yml@v1
+    with:
+      github-packages: |
+        r-lib/cpp11@v0.5.3
 
   # CRAN's rcnst, rlibro and vnu checks -- the "Additional issues" nothing
   # above reproduces. Full runs only: `quick`, which skips all three, on

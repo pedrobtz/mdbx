@@ -110,12 +110,13 @@ scripts; either works, but do not mix them.
 
 ## Local patches
 
-The vendored sources are **not pristine**: six patches route libmdbx's panic and logging paths
+The vendored sources are **not pristine**: eight patches route libmdbx's panic and logging paths
 through R's API, remove nine diagnostic suppressions, sidestep a false-positive `-Warray-bounds`
 from Rtools' MinGW headers, stop the pre-C23 `bool`/`nullptr` compatibility macros from
 shadowing the C23 keywords, and replace three trailing-array struct hacks with forms a
 bounds-checking sanitizer accepts, so that `R CMD check --as-cran` reports no warnings and libmdbx cannot
-terminate the R session. They must be re-applied whenever this pin moves.
+terminate the R session. Two more, added for 0.1.2, make a default-geometry open work under valgrind
+and stop a commit writing uninitialised bytes to disk. They must be re-applied whenever this pin moves.
 
 **The authoritative record is [../tools/patches/](../tools/patches/)**, which lives in the source
 repository only — `tools/` is excluded from the package build. This section keeps the narrative.
@@ -285,6 +286,46 @@ containers, the latter being CRAN's gcc flavor.
 `pwrite()` per contiguous run — an I/O behaviour change on every Linux and macOS install to silence
 a check, which also does nothing for `dpl`. And `-fno-sanitize=bounds-strict`, which is CRAN's
 setting rather than ours and would hide real out-of-bounds indexing.
+
+### Patch 7 — a refused reservation is retried smaller, valgrind or not
+
+CRAN's valgrind check of 0.1.1 (valgrind 3.27.1, Fedora 44) failed every example and test that
+opened an environment with the default geometry: `Invalid argument (mdbx error 22)` from
+`mdbx_env_open()`. That got the package archived on 2026-10-19 (issue #30).
+
+libmdbx's default upper bound is `reasonable_db_maxsize()`, about 1.6x physical RAM, and
+`osal_mmap()` reserves all of it up front. Valgrind cannot map an arbitrarily large region and
+answers an oversized `mmap()` with `EINVAL`. On a 16 GB GitHub runner the default asks for ~20 GB,
+which valgrind maps, so the package's own valgrind leg was green; CRAN's machine has far more RAM.
+The CI leg now reproduces this by preloading `tools/valgrind/fake-ram.c`, which makes `sysconf()`
+report 256 GB.
+
+Upstream already copes: on `EINVAL` it halves the reservation toward the current size and retries.
+But only under `RUNNING_ON_ASAN || mdbx_running_on_Valgrind()`, and the latter is constant 0
+without `ENABLE_MEMCHECK` and valgrind's headers, which neither this package nor CRAN sets. The
+patch drops the condition. The retry is upstream's own code, live in its ASAN builds, and
+`geo_in_bytes.upper` follows the reduced mapping there already. Natively an oversized
+`MAP_NORESERVE` reservation fails with `ENOMEM`, so the branch is not reached.
+
+**Rejected alternatives:** a package-level default `map_size`, which would change the default
+geometry for every user to satisfy one checker (and map sizing is an open question in
+`design.md`); and `-DENABLE_MEMCHECK`, tried for the CI leg and reverted — it needs
+`<valgrind/memcheck.h>` at build time, multiplied the uninitialised-value reports, and divides the
+assumed RAM by eight under valgrind.
+
+### Patch 8 — GC records stop carrying uninitialised list slack
+
+The same CRAN run reported `Syscall param pwritev(vector[1])` / `pwrite64(buf) points to
+uninitialised byte(s)` on commit. CI had suppressed these as libmdbx writing page padding.
+`--track-origins=yes`, which CRAN uses, shows otherwise: the bytes come from `pnl_alloc()`, not
+from the page — `page_shadow_alloc()` zeroes every page it hands out.
+
+`gc_store_retired()` reserves a GC record for `chunk_hi = left_before | 3` page numbers, up to three
+more than it stores, then copies the whole reservation from the retired-pages list. The record's
+count says `chunk`, and every reader goes by it, so the tail is never read — but it is whatever
+follows the list in memory, and that is uninitialised `malloc()` slack. The patch copies
+`gc_chunk_bytes(chunk)` and zeroes the rest. Record size and the bytes any reader sees are
+unchanged; the copy also stops reading past the end of the list.
 
 ### Reproducing
 

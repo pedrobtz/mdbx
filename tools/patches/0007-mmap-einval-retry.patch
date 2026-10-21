@@ -1,0 +1,49 @@
+Subject: Shrink and retry a refused mmap() reservation without ENABLE_MEMCHECK
+
+libmdbx's default upper geometry scales with physical RAM: about 1.6x it, from
+reasonable_db_maxsize(). osal_mmap() reserves that much address space up front.
+Valgrind cannot map an arbitrarily large region, and its mmap() refuses one
+that is too large with EINVAL. On CRAN's valgrind machine 0.1.1 failed
+exactly there: every example and test opening an environment with the default
+geometry stopped with "Invalid argument (mdbx error 22)" (issue #30). On a
+16 GB GitHub runner the same open asks for ~20 GB, which valgrind maps, so the
+package's own valgrind leg never saw it.
+
+Upstream already handles this. osal_mmap() halves the reservation toward the
+current size and retries while mmap() says EINVAL -- but only when
+RUNNING_ON_ASAN or mdbx_running_on_Valgrind(), and the latter is constant 0
+unless libmdbx is built with ENABLE_MEMCHECK and valgrind's headers. This
+package is built with neither, and CRAN does not add them.
+
+This patch drops that condition, so the retry runs on any EINVAL. Under
+valgrind the environment opens with the largest reservation valgrind accepts;
+env->geo_in_bytes.upper follows the mapping, as it already does in upstream's
+ASAN builds, where this branch is live. Natively, Linux and macOS report an
+oversized MAP_NORESERVE request as ENOMEM, not EINVAL, so the branch is not
+reached; and if an EINVAL does arrive for another reason, the loop halves the
+gap down to 1 MB -- a few dozen tries -- and then returns the EINVAL as before.
+
+Rejected alternative: a package-level default map_size. It would change the
+default geometry everywhere to fix one checker, and how map sizing is exposed
+is an open design question (.agents/design.md).
+
+Rejected alternative: -DENABLE_MEMCHECK. Tried for the CI leg and reverted
+(see the header of tools/valgrind.supp, removed in 0.1.2): it needs <valgrind/memcheck.h> at build time,
+raised the uninitialised-value reports from 2 contexts to 13, and shrinks the
+default geometry to RAM/8 under valgrind.
+
+--- a/src/vendor/libmdbx/mdbx.c
++++ b/src/vendor/libmdbx/mdbx.c
+@@ -31792,7 +31792,11 @@
+   if (unlikely(map->base == MAP_FAILED)) {
+     err = errno;
+     ASSERT(err != 0);
+-    if ((RUNNING_ON_ASAN || mdbx_running_on_Valgrind()) && err == EINVAL && map->limit - map->current > MEGABYTE) {
++    /* R package patch: shrink and retry on any EINVAL, not only when built
++     * with ENABLE_MEMCHECK and running on Valgrind. This package is not built
++     * with it, yet CRAN runs it under Valgrind, whose mmap() refuses a
++     * reservation as large as the RAM-scaled default. See tools/patches. */
++    if (err == EINVAL && map->limit - map->current > MEGABYTE) {
+       map->limit -= (map->limit - map->current) / 2;
+       map->limit = max_unsigned(size, floor_powerof2(map->limit, MEGABYTE));
+       goto retry;

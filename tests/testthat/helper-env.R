@@ -1,12 +1,12 @@
 # Throwaway paths and environments for the test suite.
 
-# Why the suite pins map_size: libmdbx's default reserves about 13 GB of
-# address space per environment. That is free in ordinary use -- it is virtual,
-# and almost none of it is ever resident -- but valgrind shadows every mapping,
-# so a suite that opens dozens of environments exhausts what valgrind can track
-# and mdbx_env_open() starts failing with EINVAL. That is what broke the
-# valgrind CI leg, with 31 errors all from mdbx_env_open(). These tests store
-# kilobytes, so they ask for megabytes.
+# Why the suite pins map_size: libmdbx's default reserves about 1.6x physical
+# RAM of address space per environment. That is free in ordinary use -- it is
+# virtual, and almost none of it is ever resident -- but valgrind shadows every
+# mapping, and refuses one past what it can track with EINVAL. libmdbx then
+# retries smaller (tools/patches/0007), so opens still succeed, but a suite
+# that opens dozens of environments would spend its valgrind run negotiating
+# reservations. These tests store kilobytes, so they ask for megabytes.
 #
 # The default geometry is still exercised, once, in test-env.R.
 test_map_size <- 8 * 1024^2

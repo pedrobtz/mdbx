@@ -1,4 +1,21 @@
-# mdbx (development version)
+# mdbx 0.1.2
+
+* Fixes the problems CRAN's valgrind check reported for 0.1.1, which led to
+  its archival on 2026-10-19 (#30). All three are in how the bundled 'libmdbx'
+  behaves under valgrind, or in what valgrind sees; nothing changes for code
+  run natively.
+
+  * `mdbx_env_open()` with the default geometry failed with "Invalid argument"
+    under valgrind on a machine with a lot of RAM. 'libmdbx' reserves address
+    space in proportion to RAM, and valgrind refuses a reservation that large.
+    'libmdbx' already retries with a smaller one, but only in builds made for
+    valgrind; it now does so in every build.
+  * A commit wrote a few bytes of uninitialised memory to disk: the unused tail
+    of a free-list record, which no reader ever looks at. It is now
+    zero-filled.
+  * A transaction or environment deliberately given up after a 'libmdbx'
+    assertion failure was reported as a "definitely lost" leak. It is still
+    given up, but is now kept reachable, so valgrind no longer counts it.
 
 # mdbx 0.1.1
 

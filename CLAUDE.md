@@ -179,11 +179,13 @@ Two Python bindings are used as prior art, and the design deliberately follows o
 
 ## The vendor tree is patched
 
-`src/vendor/libmdbx/` is **not** pristine. Six patches in `tools/patches/` route libmdbx's panic
+`src/vendor/libmdbx/` is **not** pristine. Eight patches in `tools/patches/` route libmdbx's panic
 and logging through R's API, drop nine `#pragma diagnostic ignored` lines, sidestep a
 false-positive `-Warray-bounds` from Rtools' MinGW headers, keep the pre-C23
-`bool`/`nullptr` macros from shadowing the C23 keywords, and turn three trailing-array struct
-hacks into forms gcc's `-fsanitize=bounds-strict` accepts. They are applied **by the maintainer
+`bool`/`nullptr` macros from shadowing the C23 keywords, turn three trailing-array struct
+hacks into forms gcc's `-fsanitize=bounds-strict` accepts, retry a refused `mmap()` reservation
+smaller (valgrind refuses libmdbx's RAM-scaled default), and stop GC records carrying
+uninitialised bytes to disk. They are applied **by the maintainer
 during a version bump**, never at build time — `tools/update-libmdbx.sh` re-vendors and replays
 the series. Never hand-edit the vendored sources: add or change a patch, regenerate, and update
 the post-patch digests in `tools/patches/README.md`. The *Local patches* section of
