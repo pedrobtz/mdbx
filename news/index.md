@@ -2,6 +2,8 @@
 
 ## mdbx 0.1.2
 
+CRAN release: 2026-10-23
+
 - Fixes the problems CRAN’s valgrind check reported for 0.1.1, which led
   to its archival on 2026-10-19
   ([\#30](https://github.com/pedrobtz/mdbx/issues/30)). All three are in
