@@ -1,0 +1,31 @@
+Subject: Resume after a Windows arm64 SEH fault through CONTEXT::Pc
+
+mdbx_simple_SEH() recovers from a fault on the memory map (an access violation
+or EXCEPTION_IN_PAGE_ERROR) by pointing the saved instruction pointer at a
+recovery address and continuing. It picks the CONTEXT field by word size:
+`Rip` under _WIN64, `Eip` otherwise. Windows arm64 also defines _WIN64, but
+its CONTEXT has no `Rip` -- the program counter is `Pc` -- so mdbx.c does not
+compile there ("no member named 'Rip' in 'struct _CONTEXT'"). R-universe
+builds a Windows arm64 binary, and that build fails on this line.
+
+The guard now chooses by architecture: `Pc` on arm64, then `Rip` on other
+_WIN64 targets, then `Eip`. Generated code is unchanged on x86 and x86_64.
+
+Caveat: this makes arm64 compile; it does not establish that the handler is
+reached there. Whether the recovery path works on arm64 Windows is untested.
+At worst a fault on the map aborts instead of being recovered, which is what
+would happen without the handler.
+
+--- a/src/vendor/libmdbx/mdbx.c
++++ b/src/vendor/libmdbx/mdbx.c
+@@ -29898,7 +29898,9 @@
+       if (seh->Registration.Handler == mdbx_simple_SEH &&
+           (seh->filter == pExceptionRecord->ExceptionCode ||
+            (seh->filter == EXCEPTION_ACCESS_VIOLATION && pExceptionRecord->ExceptionCode == EXCEPTION_IN_PAGE_ERROR))) {
+-#ifdef _WIN64
++#if defined(_M_ARM64) || defined(__aarch64__)
++        pContextRecord->Pc = (uintptr_t)seh->recovery;
++#elif defined(_WIN64)
+         pContextRecord->Rip = (uintptr_t)seh->recovery;
+ #else
+         pContextRecord->Eip = (uintptr_t)seh->recovery;
