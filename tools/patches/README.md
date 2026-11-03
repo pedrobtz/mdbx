@@ -18,6 +18,7 @@ re-vendors upstream and replays the series.
 | `0007-mmap-einval-retry.patch` | lets `osal_mmap()` shrink and retry a reservation `mmap()` refuses with `EINVAL` without `ENABLE_MEMCHECK`, so a default-geometry open works under valgrind |
 | `0008-gc-retired-uninit-tail.patch` | copies only the entries a GC record holds and zeroes the rest of its reservation, so a commit no longer writes uninitialised list slack to disk |
 | `0009-env-heap-roots.patch` | adds `mdbx_r_env_heap_roots()`, which reads where an environment's two page-number lists start, so the package can keep environments it never closes visibly reachable under valgrind |
+| `0010-windows-arm64-seh-pc.patch` | the SEH fault handler resumes through `CONTEXT::Pc` on arm64, where `CONTEXT` has no `Rip`, so `mdbx.c` compiles for Windows arm64 |
 
 Each patch file carries its own rationale and caveats in its header. 0001 and 0002 depend on the
 hook implementations in [../../src/r_mdbx_hooks.cpp](../../src/r_mdbx_hooks.cpp); 0003 and 0005
@@ -29,6 +30,8 @@ which natively it does not for an oversized reservation; 0008 changes only bytes
 0007 and 0008 fix CRAN's valgrind reports against 0.1.1 (issue #30). 0009 adds a read-only
 accessor and touches no existing line; it lets the package clear the "possibly lost" records
 CRAN's valgrind options count as errors.
+
+0010 changes generated code only on Windows arm64, which R-universe builds and CRAN does not.
 
 0006 is half of the fix for CRAN's UBSAN reports against 0.1.0. The other half is not a patch:
 `-DMDBX_UNALIGNED_OK=0` in `src/Makevars`, which is an upstream configuration knob.
@@ -44,7 +47,7 @@ From the package root, against a freshly vendored pristine tree:
 for p in tools/patches/*.patch; do patch -p1 < "$p"; done
 ```
 
-Order matters: 0001, 0002, 0004, 0006, 0007, 0008 and 0009 all edit `mdbx.c`, and each one's hunk offsets assume
+Order matters: 0001, 0002, 0004, 0006, 0007, 0008, 0009 and 0010 all edit `mdbx.c`, and each one's hunk offsets assume
 its predecessors have already been applied. 0006 also edits `mdbx-internals.h`, after 0003 and
 0005. 0005 is independent of the rest — it is the only one that
 edits `mdbx.h`, and its `mdbx-internals.h` hunk does not overlap 0003's.
@@ -54,7 +57,7 @@ edits `mdbx.h`, and its `mdbx-internals.h` hunk does not overlap 0003's.
 Applying the full series to pristine libmdbx v0.14.3 must yield exactly:
 
 ```
-6221d43115f0ed79a11442d9c311c14030d59ba6c003362b942854ba00874f53  mdbx.c
+0effc6d218a1f94fd326db4ae7eb661d1d2d94c7da2f2c789695afcd65e41246  mdbx.c
 1d2fc0eb6477a3ea6f5a0a17ca65aa874a3b9bd299167c5645f16f45aa133b96  mdbx.h
 4e4bfcbe9e149fcb4a9dbd160c1660981ca5038a22bdd14d09689ee5a433e682  mdbx-internals.h
 ```

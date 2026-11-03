@@ -117,7 +117,8 @@ shadowing the C23 keywords, and replace three trailing-array struct hacks with f
 bounds-checking sanitizer accepts, so that `R CMD check --as-cran` reports no warnings and libmdbx cannot
 terminate the R session. Three more, added for 0.1.2, make a default-geometry open work under valgrind,
 stop a commit writing uninitialised bytes to disk, and expose where an environment's page-number
-lists start, so environments the package never closes are not reported as possibly lost. They must be re-applied whenever this pin moves.
+lists start, so environments the package never closes are not reported as possibly lost. A tenth lets the SEH fault
+handler compile on Windows arm64. They must be re-applied whenever this pin moves.
 
 **The authoritative record is [../tools/patches/](../tools/patches/)**, which lives in the source
 repository only — `tools/` is excluded from the package build. This section keeps the narrative.
@@ -348,6 +349,17 @@ taken between transactions. A stale value is harmless: at worst that record is r
 **Rejected alternatives:** valgrind's `--leak-check-heuristics`, none of which matches a 4-byte
 interior offset and which CRAN does not set; and calling `gc()` before forking in the tests, which
 removes only the environments that were garbage anyway, not the panicked ones every child inherits.
+
+### Patch 10 — the SEH fault handler compiles on Windows arm64
+
+`mdbx_simple_SEH()` recovers from a fault on the memory map by pointing the saved instruction
+pointer at a recovery address. Upstream chooses the `CONTEXT` field by word size, `Rip` under
+`_WIN64` and `Eip` otherwise. Windows arm64 also defines `_WIN64`, but its `CONTEXT` names the
+program counter `Pc`, so `mdbx.c` failed to compile in R-universe's Windows arm64 build. The guard
+now tests `_M_ARM64`/`__aarch64__` first. x86 and x86_64 are unchanged.
+
+The patch only makes arm64 compile. Whether the handler is reached on arm64 Windows is untested;
+at worst a fault on the map aborts there instead of being recovered.
 
 ### Reproducing
 

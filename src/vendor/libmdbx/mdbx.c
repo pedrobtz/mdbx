@@ -29898,7 +29898,9 @@ _Function_class_(EXCEPTION_ROUTINE)
       if (seh->Registration.Handler == mdbx_simple_SEH &&
           (seh->filter == pExceptionRecord->ExceptionCode ||
            (seh->filter == EXCEPTION_ACCESS_VIOLATION && pExceptionRecord->ExceptionCode == EXCEPTION_IN_PAGE_ERROR))) {
-#ifdef _WIN64
+#if defined(_M_ARM64) || defined(__aarch64__)
+        pContextRecord->Pc = (uintptr_t)seh->recovery;
+#elif defined(_WIN64)
         pContextRecord->Rip = (uintptr_t)seh->recovery;
 #else
         pContextRecord->Eip = (uintptr_t)seh->recovery;

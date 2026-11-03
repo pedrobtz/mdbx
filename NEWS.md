@@ -1,5 +1,9 @@
 # mdbx (development version)
 
+* The bundled 'libmdbx' now compiles for Windows on arm64. Its handler for a
+  fault on the memory map set the x86_64 `Rip` register field, which arm64
+  does not have.
+
 # mdbx 0.1.2
 
 * Fixes the problems CRAN's valgrind check reported for 0.1.1, which led to
