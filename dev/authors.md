@@ -22,13 +22,13 @@ Source:
 [`DESCRIPTION`](https://github.com/pedrobtz/mdbx/blob/main/DESCRIPTION)
 
 Baltazar P (2026). *mdbx: Bindings to the 'libmdbx' Embedded Key-Value
-Store*. R package version 0.1.1.9000,
+Store*. R package version 0.1.2.9000,
 <https://pedrobtz.github.io/mdbx/>.
 
     @Manual{,
       title = {mdbx: Bindings to the 'libmdbx' Embedded Key-Value Store},
       author = {Pedro Baltazar},
       year = {2026},
-      note = {R package version 0.1.1.9000},
+      note = {R package version 0.1.2.9000},
       url = {https://pedrobtz.github.io/mdbx/},
     }

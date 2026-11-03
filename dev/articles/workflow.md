@@ -61,7 +61,7 @@ slots cost nothing, and the default of 16 suits most uses.
 path <- file.path(tempdir(), "runs.mdbx")
 env <- mdbx_env_open(path, max_dbs = 4)
 env
-#> <mdbx_env> /tmp/Rtmp3TpAuk/runs.mdbx 
+#> <mdbx_env> /tmp/RtmpJLhThk/runs.mdbx 
 #>   access: read-write 
 #>   layout: single file 
 #>   status: open
@@ -458,7 +458,7 @@ mdbx_env_info(env)[c("geo_current", "mapsize", "numreaders", "maxreaders")]
 #> [1] 65536
 #> 
 #> $mapsize
-#> [1] 22548578304
+#> [1] 23622320128
 #> 
 #> $numreaders
 #> [1] 1

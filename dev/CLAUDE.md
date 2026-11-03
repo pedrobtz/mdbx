@@ -234,17 +234,21 @@ follows one of them:
 
 ## The vendor tree is patched
 
-`src/vendor/libmdbx/` is **not** pristine. Six patches in
+`src/vendor/libmdbx/` is **not** pristine. Ten patches in
 `tools/patches/` route libmdbx’s panic and logging through R’s API, drop
 nine `#pragma diagnostic ignored` lines, sidestep a false-positive
 `-Warray-bounds` from Rtools’ MinGW headers, keep the pre-C23
-`bool`/`nullptr` macros from shadowing the C23 keywords, and turn three
+`bool`/`nullptr` macros from shadowing the C23 keywords, turn three
 trailing-array struct hacks into forms gcc’s `-fsanitize=bounds-strict`
-accepts. They are applied **by the maintainer during a version bump**,
-never at build time — `tools/update-libmdbx.sh` re-vendors and replays
-the series. Never hand-edit the vendored sources: add or change a patch,
-regenerate, and update the post-patch digests in
-`tools/patches/README.md`. The *Local patches* section of
+accepts, retry a refused `mmap()` reservation smaller (valgrind refuses
+libmdbx’s RAM-scaled default), stop GC records carrying uninitialised
+bytes to disk, expose where an environment’s page-number lists start,
+and let the SEH fault handler compile on Windows arm64. They are applied
+**by the maintainer during a version bump**, never at build time —
+`tools/update-libmdbx.sh` re-vendors and replays the series. Never
+hand-edit the vendored sources: add or change a patch, regenerate, and
+update the post-patch digests in `tools/patches/README.md`. The *Local
+patches* section of
 [.agents/vendoring.md](https://pedrobtz.github.io/mdbx/dev/.agents/vendoring.md)
 carries the narrative — what each patch does, and which alternatives
 were rejected.
