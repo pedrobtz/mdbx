@@ -15,8 +15,11 @@
 # README.md, which ships in the tarball, so a prose-only change is a real
 # change here.
 on:
-  push:
-    branches: [main, master]
+  # No `push:`: a pull request already checks its merge with main,
+  # and the schedule checks main (r-actions README, "Pushes to main").
+  schedule:
+    - cron: "41 9 * * 6"
+  workflow_dispatch:
   pull_request:
 
 name: R-CMD-check.yaml
