@@ -16,3 +16,6 @@
 ^\.Rproj\.user$
 ^CRAN-SUBMISSION$
 ^review\.md$
+^\.superpowers$
+^\.worktrees$
+^\.claude$
