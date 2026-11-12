@@ -5,7 +5,7 @@
 [![CRAN status](https://www.r-pkg.org/badges/version/mdbx)](https://CRAN.R-project.org/package=mdbx)
 [![R-CMD-check](https://github.com/pedrobtz/mdbx/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/pedrobtz/mdbx/actions/workflows/R-CMD-check.yaml)
 [![hardening](https://img.shields.io/github/actions/workflow/status/pedrobtz/mdbx/native-checks.yaml?branch=main&label=hardening)](https://github.com/pedrobtz/mdbx/actions/workflows/native-checks.yaml)
-[![coverage](https://raw.githubusercontent.com/pedrobtz/mdbx/main/.github/badges/coverage.svg)](https://github.com/pedrobtz/mdbx/actions/workflows/coverage.yaml)
+[![coverage](https://raw.githubusercontent.com/pedrobtz/mdbx/gh-pages/badges/coverage.svg)](https://github.com/pedrobtz/mdbx/actions/workflows/coverage.yaml)
 <!-- badges: end -->
 
 R bindings to [libmdbx](https://libmdbx.dqdkfa.ru/), an embedded transactional key-value store.
